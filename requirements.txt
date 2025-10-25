@@ -24,19 +24,20 @@ pydub
 scipy
 flet
 sortedcontainers
-gguf>=0.13.0
+gguf
 sentencepiece
 protobuf
 diffusers
 openpyxl
 wget
 aiohttp
-pyyaml>=6.0  
-watchdog>=3.0.0
-filelock>=3.12.0
+pyyaml
+watchdog
+filelock
 opencv-python
 psd_tools
 pynvml
+
 
 
 
