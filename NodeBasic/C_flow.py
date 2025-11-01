@@ -491,17 +491,12 @@ class flow_case_tentor:
 
 
 
-
 class flow_sch_control:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
                     "count": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                     "total": ("INT", {"default": 10, "min": 1, "max": 0xffffffffffffffff}),
-
-                    "min_value": ("FLOAT", {"default": 0.0, "min": -999, "max": 999, "step": 0.01}),
-                    "max_value": ("FLOAT", {"default": 1.0, "min": -999, "max": 999, "step": 0.01}),
-
                     "mode": ("BOOLEAN", {"default": True, "label_on": "Trigger", "label_off": "Don't trigger"}),
                     },
                 "optional": {},
@@ -511,34 +506,23 @@ class flow_sch_control:
     FUNCTION = "doit"
 
     CATEGORY = "Apt_Preset/flow"
-    RETURN_TYPES = ("INT", "FLOAT", "INT")
-    RETURN_NAMES = ("count", "refloat", "total")
+    RETURN_TYPES = ( "INT", "INT")
+    RETURN_NAMES = ( "count", "total")
     OUTPUT_NODE = True
 
-    def doit(self, count, total, mode, unique_id, min_value, max_value):
-        # 处理计数触发逻辑
-        if mode:
+    def doit(self, count, total, mode, unique_id, ):
+        if (mode):
             if count < total - 1:
-                PromptServer.instance.send_sync(
-                    "impact-node-feedback2",
-                    {"node_id": unique_id, "widget_name": "count", "type": "int", "value": count + 1}
-                )
+                PromptServer.instance.send_sync("impact-node-feedback2",
+                                                {"node_id": unique_id, "widget_name": "count", "type": "int", "value": count+1})
                 PromptServer.instance.send_sync("impact-add-queue2", {})
-            else:
-                PromptServer.instance.send_sync(
-                    "impact-node-feedback2",
-                    {"node_id": unique_id, "widget_name": "count", "type": "int", "value": 0}
-                )
-        
-        # 线性重映射计算：将count从[0, total-1]范围映射到[min_value, max_value]
-        if total == 1:
-            # 特殊情况：总数为1时直接返回最小值（或最大值，两者相同）
-            refloat = min_value
-        else:
-            # 线性插值公式：y = min + (max - min) * (x / (total - 1))
-            refloat = min_value + (max_value - min_value) * (count / (total - 1))
-        
-        return (count, refloat, total)
+            if count >= total - 1:
+                PromptServer.instance.send_sync("impact-node-feedback2",
+                                                {"node_id": unique_id, "widget_name": "count", "type": "int", "value": 0})
+
+        return (count, total)
+
+
 
 
 
