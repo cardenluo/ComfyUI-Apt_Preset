@@ -13,6 +13,8 @@
 
 2025.10.19 添加 QwenEditplus stack,支持大尺寸图稳定输出
 
+2025.11.2  添加，输入_文本，输出_文本，支持多种格式的文本读取和存放
+
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
 ## <font color="#0000FF"> 1、全能加载器 Sum_load_adv, 支持 GGuf模型</font>
