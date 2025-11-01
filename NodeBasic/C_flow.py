@@ -1,20 +1,15 @@
 import folder_paths
 from comfy import model_management
-
 from comfy_extras.nodes_post_processing import ImageScaleToTotalPixels
 from comfy.utils import common_upscale
-
 import torch
 import numpy as np
 from PIL import Image
 import base64
 import io
 import json
-
-
-import torch
 from typing import Tuple
-
+from server import PromptServer
 
 
 from ..main_unit import *
@@ -310,7 +305,7 @@ class flow_switch:
 
 
 
-class flow_sch_control:
+class XXflow_sch_control:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -493,6 +488,63 @@ class flow_case_tentor:
             raise ValueError(f"不支持的判断模式: {case_judge}")
         
         return (result,)
+
+
+
+
+class flow_sch_control:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+                    "count": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                    "total": ("INT", {"default": 10, "min": 1, "max": 0xffffffffffffffff}),
+
+                    "min_value": ("FLOAT", {"default": 0.0, "min": -999, "max": 999, "step": 0.01}),
+                    "max_value": ("FLOAT", {"default": 1.0, "min": -999, "max": 999, "step": 0.01}),
+
+                    "mode": ("BOOLEAN", {"default": True, "label_on": "Trigger", "label_off": "Don't trigger"}),
+                    },
+                "optional": {},
+                "hidden": {"unique_id": "UNIQUE_ID"}
+                }
+
+    FUNCTION = "doit"
+
+    CATEGORY = "Apt_Preset/flow"
+    RETURN_TYPES = ("INT", "FLOAT", "INT")
+    RETURN_NAMES = ("count", "refloat", "total")
+    OUTPUT_NODE = True
+
+    def doit(self, count, total, mode, unique_id, min_value, max_value):
+        # 处理计数触发逻辑
+        if mode:
+            if count < total - 1:
+                PromptServer.instance.send_sync(
+                    "impact-node-feedback2",
+                    {"node_id": unique_id, "widget_name": "count", "type": "int", "value": count + 1}
+                )
+                PromptServer.instance.send_sync("impact-add-queue2", {})
+            else:
+                PromptServer.instance.send_sync(
+                    "impact-node-feedback2",
+                    {"node_id": unique_id, "widget_name": "count", "type": "int", "value": 0}
+                )
+        
+        # 线性重映射计算：将count从[0, total-1]范围映射到[min_value, max_value]
+        if total == 1:
+            # 特殊情况：总数为1时直接返回最小值（或最大值，两者相同）
+            refloat = min_value
+        else:
+            # 线性插值公式：y = min + (max - min) * (x / (total - 1))
+            refloat = min_value + (max_value - min_value) * (count / (total - 1))
+        
+        return (count, refloat, total)
+
+
+
+
+
+
 
 
 
