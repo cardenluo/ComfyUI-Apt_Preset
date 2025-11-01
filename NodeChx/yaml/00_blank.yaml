@@ -1,0 +1,16 @@
+00_blank:
+  prompt: 
+通用-写实:
+  prompt: (masterpiece:1.3), (best quality:1.3), (high resolution:1.2), (high detail:1.2),
+    8k resolution, RAW photo, ultra-high quality, realistic photo, photographic masterpiece,
+    hyper-realistic, true-to-life photo realism
+通用-基础:
+  negative: blur
+  prompt: best quality,masterpiece,realistic, ultra-fine painting
+通用-效果图:
+  prompt: '3D render,'
+通用-纯净:
+  prompt: flawless presentation, immaculate details, pure and bright atmosphere, crisp
+    and clean edges, seamless composition, high contrast, luminous quality, soft lighting,
+    gentle gradients, serene and calm ambiance, well-balanced elements, minimalist
+    aesthetic, airy and light, vibrant colors, spotless surfaces, refined textures
