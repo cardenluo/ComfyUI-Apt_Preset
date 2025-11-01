@@ -17,6 +17,7 @@ The current workflow connections are becoming increasingly dense, making them di
 2025.10.27 Added a new node, sum ksampler, and optimized the layout
 
 2025.11.2 Add, input_text, output_text, support reading and storing text in multiple formats
+          add sum_ksample Includes the switching of multiple sampling methods
 
 # II. Usage Guide
 
