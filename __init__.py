@@ -307,7 +307,7 @@ NODE_CLASS_MAPPINGS= {
 
 "list_Value":list_Value,
 "math_calculate": math_calculate, 
-
+"math_Remap_data": math_Remap_data,  
 
 "create_mask_batch": create_mask_batch, #wed
 "create_image_batch": create_image_batch, #wed
@@ -324,7 +324,7 @@ NODE_CLASS_MAPPINGS= {
 "batch_MergeBatch": MergeBatch, #wed
 "pack_Pack": Pack, #wed
 "pack_Unpack": Unpack, #wed
-"math_Remap_data": math_Remap_data,  
+
 
 
 
@@ -486,9 +486,12 @@ NODE_CLASS_MAPPINGS= {
 "flow_judge":flow_judge,
 "flow_auto_pixel":flow_auto_pixel, 
 "flow_switch":flow_switch,
-"flow_sch_control":flow_sch_control,
 "flow_low_gpu":flow_low_gpu,
 "flow_case_tentor":flow_case_tentor,
+"flow_QueueTrigger":flow_QueueTrigger,
+"flow_ValueSender":flow_ValueSender,
+"flow_ValueReceiver":flow_ValueReceiver,
+
 
 
 #region------------------------准备废弃-------------------------
