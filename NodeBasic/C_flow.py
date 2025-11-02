@@ -491,13 +491,17 @@ class flow_case_tentor:
 
 
 
-class flow_sch_control:
+
+
+class flow_QueueTrigger:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
                     "count": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                     "total": ("INT", {"default": 10, "min": 1, "max": 0xffffffffffffffff}),
                     "mode": ("BOOLEAN", {"default": True, "label_on": "Trigger", "label_off": "Don't trigger"}),
+                    "min_value": ("FLOAT", {"default": 0.0, "min": -999, "max": 999, "step": 0.01}),  # 新增：映射最小值
+                    "max_value": ("FLOAT", {"default": 1.0, "min": -999, "max": 999, "step": 0.01}),  # 新增：映射最大值
                     },
                 "optional": {},
                 "hidden": {"unique_id": "UNIQUE_ID"}
@@ -506,21 +510,92 @@ class flow_sch_control:
     FUNCTION = "doit"
 
     CATEGORY = "Apt_Preset/flow"
-    RETURN_TYPES = ( "INT", "INT")
-    RETURN_NAMES = ( "count", "total")
+    RETURN_TYPES = ("INT", "INT", "FLOAT")  # 新增：浮点型重映射结果
+    RETURN_NAMES = ("count", "total", "remapped_value")  # 新增输出名称
     OUTPUT_NODE = True
 
-    def doit(self, count, total, mode, unique_id, ):
-        if (mode):
+    def doit(self, count, total, mode, min_value, max_value, unique_id):  # 新增参数：min_value, max_value
+        # 处理计数逻辑（保持原有逻辑不变）
+        if mode:
             if count < total - 1:
-                PromptServer.instance.send_sync("impact-node-feedback2",
-                                                {"node_id": unique_id, "widget_name": "count", "type": "int", "value": count+1})
-                PromptServer.instance.send_sync("impact-add-queue2", {})
-            if count >= total - 1:
-                PromptServer.instance.send_sync("impact-node-feedback2",
+                PromptServer.instance.send_sync("node-feedback",
+                                                {"node_id": unique_id, "widget_name": "count", "type": "int", "value": count + 1})
+                PromptServer.instance.send_sync("add-queue", {})
+            elif count >= total - 1:
+                PromptServer.instance.send_sync("node-feedback",
                                                 {"node_id": unique_id, "widget_name": "count", "type": "int", "value": 0})
 
-        return (count, total)
+        # 新增：重映射逻辑（将count从[0, total-1]映射到[min_value, max_value]）
+        if total == 1:
+            # 特殊情况：total=1时，count始终为0，直接映射为min_value
+            remapped_value = min_value
+        else:
+            # 归一化count到[0, 1]范围，再映射到目标区间
+            normalized = count / (total - 1)
+            remapped_value = min_value + (max_value - min_value) * normalized
+
+        # 返回原count、total，以及新增的重映射结果
+        return (count, total, remapped_value)
+
+
+
+class flow_ValueSender:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+                    "value": (any_typ, ),
+                    "link_id": ("INT", {"default": 0, "min": 0, "max": 99999999 ,"step": 1}),
+                    },
+                "optional": {
+
+                    }
+                }
+
+    OUTPUT_NODE = True
+    FUNCTION = "doit"
+    CATEGORY = "Apt_Preset/flow"
+    RETURN_TYPES = (any_typ, )
+    RETURN_NAMES = ("-", )
+
+    def doit(self, value, link_id=0, ):
+        PromptServer.instance.send_sync("value-send", {"link_id": link_id, "value": value})
+        return ()
+
+
+
+class flow_ValueReceiver:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+                    "typ": (["STRING", "INT", "FLOAT", "BOOLEAN"], ),
+                    "value": ("STRING", {"default": ""}),
+                    "link_id": ("INT", {"default": 0, "min": 0, "max": 99999999, "step": 1}),
+                    },
+                }
+
+    FUNCTION = "doit"
+    CATEGORY = "Apt_Preset/flow"
+    RETURN_TYPES = (any_typ, )
+    def doit(self, typ, value, link_id=0):
+        if typ == "INT":
+            return (int(value), )
+        elif typ == "FLOAT":
+            return (float(value), )
+        elif typ == "BOOLEAN":
+            return (value.lower() == "true", )
+        else:
+            return (value, )
+
+
+
+
+
+
+
+
+
+
+
 
 
 
