@@ -1117,52 +1117,26 @@ class create_mask_array:
 
 
 
-
-
-
 class Mask_Remove_bg:
     def __init__(self):
         pass
+    
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "image": ("IMAGE",),
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "bg_img": ([ "image", "Alpha","white", "black", "green", "red", "blue", "gray"], {"default": "image"},),
-                "rem_mode": (( "RMBG-1.4", "Inspyrenet"), {"default": "RMBG-1.4"}),
-            },
-            "optional": {
-                "mask": ("MASK",),
+                "bg_img": (["image", "white", "black", "green", "red", "blue", "gray"], {"default": "image"},),
+                "rem_mode": (("RMBG-1.4", "Inspyrenet"), {"default": "RMBG-1.4"}),
             },
         }
+    
     RETURN_TYPES = ("IMAGE", "MASK", "MASK",)
     RETURN_NAMES = ("image", "mask", "invert_mask",)
     FUNCTION = "removebg"
     CATEGORY = "Apt_Preset/mask"
-    def mask_crop(self, image, mask, up=0, down=0, left=0, right=0):
-        image_pil = tensor2pil(image)
-        mask_pil = tensor2pil(mask)
-        mask_array = np.array(mask_pil) > 0
-        coords = np.where(mask_array)
-        if coords[0].size == 0 or coords[1].size == 0:
-            return (image, torch.zeros_like(mask))
-        x0, y0, x1, y1 = coords[1].min(), coords[0].min(), coords[1].max(), coords[0].max()
-        x0 -= left
-        y0 -= up
-        x1 += right
-        y1 += down
-        x0 = max(x0, 0)
-        y0 = max(y0, 0)
-        x1 = min(x1, image_pil.width)
-        y1 = min(y1, image_pil.height)
-        cropped_image_pil = image_pil.crop((x0, y0, x1, y1))
-        cropped_mask_pil = mask_pil.crop((x0, y0, x1, y1))
-        cropped_image_tensor = pil2tensor(cropped_image_pil)
-        cropped_mask_tensor = pil2tensor(cropped_mask_pil)
-        if cropped_mask_tensor.dim() == 2:
-            cropped_mask_tensor = cropped_mask_tensor.unsqueeze(0)
-        return (cropped_image_tensor, cropped_mask_tensor)
+    
     def standardize_mask_dim(self, mask_tensor):
         if mask_tensor.dim() == 2:
             return mask_tensor.unsqueeze(0)
@@ -1172,17 +1146,17 @@ class Mask_Remove_bg:
             return mask_tensor
         else:
             raise ValueError(f"不支持的掩码维度：{mask_tensor.dim()}，当前掩码形状：{mask_tensor.shape}")
-    def removebg(self, bg_img, image, threshold, rem_mode, mask=None):
+    
+    def removebg(self, bg_img, image, threshold, rem_mode):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if mask is not None:
-            crop_result = self.mask_crop(image, mask, up=0, down=0, left=0, right=0)
-            image = crop_result[0]
         new_images = []
         masks = []
+        
+        # 生成掩码（不处理Alpha通道，只生成单通道掩码）
         if rem_mode == "RMBG-1.4":
             model_path = os.path.join(folder_paths.models_dir, "rembg", "RMBG-1.4.pth")
             if not os.path.exists(model_path):
-                raise FileNotFoundError(f"RMBG-1.4 模型文件未找到：{model_path}，请确认模型已下载至该路径")
+                raise FileNotFoundError(f"RMBG-1.4 模型文件未找到：{model_path}")
             try:
                 from .moduleRembg.rembg import BriaRMBG, preprocess_image, postprocess_image
                 net = BriaRMBG()
@@ -1197,72 +1171,87 @@ class Mask_Remove_bg:
                     with torch.no_grad():
                         model_output = net(input_image)
                         mask_array = postprocess_image(model_output[0][0], (h_ori, w_ori))
-                        mask_im = Image.fromarray(mask_array)
-                        rgba_image = Image.new("RGBA", mask_im.size, (0, 0, 0, 0))
-                        rgba_image.paste(orig_im, mask=mask_im)
-                        new_images.append(pil2tensor(rgba_image))
-                        masks.append(pil2tensor(mask_im))
+                        mask_tensor = torch.from_numpy(mask_array).float() / 255.0
+                        masks.append(mask_tensor)
+                        new_images.append(img_tensor)  # 保留原始图像用于后续处理
                 del net
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except ImportError as e:
-                raise RuntimeError(f"RMBG-1.4 依赖模块缺失：{str(e)}，请确认 moduleRembg 文件夹已正确放置")
             except Exception as e:
-                raise RuntimeError(f"RMBG-1.4 模型运行错误：{str(e)}")
+                raise RuntimeError(f"RMBG-1.4 错误：{str(e)}")
         elif rem_mode == "Inspyrenet":
             try:
                 from transparent_background import Remover
                 remover = Remover()
                 for img_tensor in image:
                     orig_im = tensor2pil(img_tensor)
-                    rgba_im = remover.process(orig_im, type='rgba', threshold=threshold)
-                    rgba_tensor = pil2tensor(rgba_im)
-                    new_images.append(rgba_tensor)
-                    alpha_mask = rgba_tensor[:, :, :, 3]
-                    masks.append(alpha_mask)
-            except ImportError as e:
-                raise RuntimeError(f"Inspyrenet 依赖模块缺失：{str(e)}，请执行 pip install transparent-background 安装")
+                    mask_im = remover.process(orig_im, type='mask', threshold=threshold)
+                    mask_tensor = pil2tensor(mask_im).squeeze()
+                    masks.append(mask_tensor)
+                    new_images.append(img_tensor)  # 保留原始图像用于后续处理
             except Exception as e:
-                raise RuntimeError(f"Inspyrenet 模型运行错误：{str(e)}")
-        img_stack = torch.cat(new_images, dim=0) if len(new_images) > 1 else new_images[0].unsqueeze(0)
-        mask_stack = torch.cat(masks, dim=0) if len(masks) > 1 else masks[0]
+                raise RuntimeError(f"Inspyrenet 错误：{str(e)}")
+        
+        # 处理掩码和图像堆叠
+        img_stack = torch.stack(new_images, dim=0) if len(new_images) > 1 else new_images[0].unsqueeze(0)
+        mask_stack = torch.stack(masks, dim=0) if len(masks) > 1 else masks[0].unsqueeze(0)
         invert_mask = 1.0 - mask_stack
+        
+        # 确保掩码是4维 [B, 1, H, W] 以便广播
+        if mask_stack.dim() == 3:
+            mask_stack = mask_stack.unsqueeze(1)
+        mask_broadcast = mask_stack.permute(0, 2, 3, 1)  # 转为 [B, H, W, 1] 用于广播
+        
+        # 处理背景替换（完全移除Alpha相关逻辑）
         if bg_img == "image":
-            image2 = img_stack[:, :, :, :3] * img_stack[:, :, :, 3:4] + image[:, :, :, :3] * (1 - img_stack[:, :, :, 3:4])
+            # 确保原始图像与掩码尺寸匹配
+            if image.shape[1:3] != img_stack.shape[1:3]:
+                image_resized = torch.nn.functional.interpolate(
+                    image.permute(0, 3, 1, 2),
+                    size=img_stack.shape[1:3],
+                    mode='bilinear',
+                    align_corners=False
+                ).permute(0, 2, 3, 1)
+            else:
+                image_resized = image
+            # 使用掩码混合图像
+            image2 = img_stack * mask_broadcast + image_resized * (1 - mask_broadcast)
         elif bg_img == "white":
-            white_bg = torch.ones_like(img_stack[:, :, :, :3])
-            alpha = img_stack[:, :, :, 3:4]
-            image2 = alpha * img_stack[:, :, :, :3] + (1 - alpha) * white_bg
+            white_bg = torch.ones_like(img_stack)
+            image2 = img_stack * mask_broadcast + white_bg * (1 - mask_broadcast)
         elif bg_img == "black":
-            black_bg = torch.zeros_like(img_stack[:, :, :, :3])
-            alpha = img_stack[:, :, :, 3:4]
-            image2 = alpha * img_stack[:, :, :, :3] + (1 - alpha) * black_bg
+            black_bg = torch.zeros_like(img_stack)
+            image2 = img_stack * mask_broadcast + black_bg * (1 - mask_broadcast)
         elif bg_img == "green":
-            green_bg = torch.zeros_like(img_stack[:, :, :, :3])
-            green_bg[:, :, :, 1] = 1.0
-            alpha = img_stack[:, :, :, 3:4]
-            image2 = alpha * img_stack[:, :, :, :3] + (1 - alpha) * green_bg
+            green_bg = torch.zeros_like(img_stack)
+            green_bg[..., 1] = 1.0  # 绿色通道设为1
+            image2 = img_stack * mask_broadcast + green_bg * (1 - mask_broadcast)
         elif bg_img == "red":
-            red_bg = torch.zeros_like(img_stack[:, :, :, :3])
-            red_bg[:, :, :, 0] = 1.0
-            alpha = img_stack[:, :, :, 3:4]
-            image2 = alpha * img_stack[:, :, :, :3] + (1 - alpha) * red_bg
+            red_bg = torch.zeros_like(img_stack)
+            red_bg[..., 0] = 1.0  # 红色通道设为1
+            image2 = img_stack * mask_broadcast + red_bg * (1 - mask_broadcast)
         elif bg_img == "blue":
-            blue_bg = torch.zeros_like(img_stack[:, :, :, :3])
-            blue_bg[:, :, :, 2] = 1.0
-            alpha = img_stack[:, :, :, 3:4]
-            image2 = alpha * img_stack[:, :, :, :3] + (1 - alpha) * blue_bg
+            blue_bg = torch.zeros_like(img_stack)
+            blue_bg[..., 2] = 1.0  # 蓝色通道设为1
+            image2 = img_stack * mask_broadcast + blue_bg * (1 - mask_broadcast)
         elif bg_img == "gray":
-            gray_bg = torch.full_like(img_stack[:, :, :, :3], 0.5)
-            alpha = img_stack[:, :, :, 3:4]
-            image2 = alpha * img_stack[:, :, :, :3] + (1 - alpha) * gray_bg
-        elif bg_img == "Alpha":
-            image2 = img_stack
+            gray_bg = torch.full_like(img_stack, 0.5)
+            image2 = img_stack * mask_broadcast + gray_bg * (1 - mask_broadcast)
+        
+        # 确保输出格式正确
+        if image2.dim() == 3:
+            image2 = image2.unsqueeze(0)
+        if image2.shape[1] in [3, 4]:
+            image2 = image2.permute(0, 2, 3, 1)
+        image2 = image2.float()
+        
+        # 标准化掩码输出
         mask_stack = self.standardize_mask_dim(mask_stack)
         invert_mask = self.standardize_mask_dim(invert_mask)
         mask_stack = mask_stack.float()
         invert_mask = invert_mask.float()
-        return (image2, mask_stack, invert_mask, )
+        
+        return (image2, mask_stack, invert_mask,)
 
 
 
