@@ -83,6 +83,7 @@ ANY_TYPE = AnyType("*")
 any_type = AnyType("*")
 anyType = AnyType("*")
 anytype = AnyType("*")
+any_typ= AnyType("*")
 
 MAX_RESOLUTION = 88888
 CLIP_TYPE = ["sdxl", "sd3", "flux", "hunyuan_video", "stable_diffusion", "stable_audio", "mochi", "ltxv", "pixart", "cosmos", "lumina2", "wan"]
@@ -2580,6 +2581,7 @@ def center_transform_layer( align_mode, x_offset, y_offset, rotation, scale, edg
 
 
 #endregion---------------------------视觉标记--------------------------
+
 
 
 
