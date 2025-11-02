@@ -911,8 +911,12 @@ class sum_stack_QwenEditPlus:
     latent_mask: 生成图遮罩
     """
 
+
     def QWENencode(self,context=None, prompt="", model=None, lora_stack=None,union_controlnet=None,image1=None, image2=None, image3=None,
-                   vl_size=384,latent_image=None, latent_mask=None,auto_resize=True):
+                vl_size=384,latent_image=None, latent_mask=None,auto_resize=True, union_stack=None):
+        # 将 union_stack 映射到 union_controlnet，保持向后兼容
+        if union_stack is not None and union_controlnet is None:
+            union_controlnet = union_stack
 
         if model is None:
             model = context.get("model", None)
