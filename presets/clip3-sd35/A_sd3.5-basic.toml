@@ -1,0 +1,27 @@
+run_Mode = "SD3.5"
+ckpt_name = "None"
+clipnum = "0"
+vae = "SD3.5vae.safetensors"
+
+PromptMid = "a girl ,garden ,flowers"
+
+
+clip_type = "sd3"
+width = 1024
+height = 1024
+batch = 1
+steps = 40
+cfg = 4.5
+sampler = "dpmpp_2m"
+scheduler = "sgm_uniform"
+seedflow= 4
+lora ="None"
+lora_strength = 1.0
+unet_name="sd3.5\\sd3.5_large.safetensors"
+clip1="clip_l.safetensors"
+clip2="clip_g.safetensors"
+clip3="t5xxl_fp8_e4m3fn.safetensors"
+unet_Weight_Dtype="fp8_e4m3fn"
+cache_threshold = "0.0"
+attention = "nunchaku-fp16"
+cpu_offload = "auto"
