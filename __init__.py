@@ -496,6 +496,19 @@ NODE_CLASS_MAPPINGS= {
 "Test_CN_ImgPreview": Test_CN_ImgPreview,
 
 #region------------------------准备废弃-------------------------
+
+
+
+#----------------------外部导入节点-----------------------
+
+"Easy_QwenEdit2509": Easy_QwenEdit2509,
+
+#----------------------外部导入节点-----------------------
+
+
+
+
+
 "type_BasiPIPE": type_BasiPIPE, #(Deprecated)
 "load_FLUX": load_FLUX,   #TITLE = "load_FLUX (Deprecated)"    CATEGORY = "Apt_Preset/🚫Deprecated/🚫"
 "load_basic": load_basic, #(Deprecated)
