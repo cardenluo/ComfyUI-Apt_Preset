@@ -2251,180 +2251,8 @@ class Stack_sample_data:
     
 
 
-class chx_Ksampler_inpaint:   
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "context": ("RUN_CONTEXT",),
-                "latent_image": ("IMAGE", ),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "denoise": ("FLOAT", {"default": 0.3, "min": 0, "max": 1, "step": 0.01}),
-                "work_pattern": (["ksampler", "only_adjust_mask"], {"default": "ksampler"}),
 
-                "crop_mode": (["no_crop", "no_scale_crop", "scale_crop_image", ], {"default": "no_scale_crop"}),
-                "long_side": ("INT", {"default": 512, "min": 16, "max": 2048, "step": 2}),
-
-                "expand_width": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 1}),
-                "expand_height": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 1}),     
-
-                "out_smoothness": ("INT", {"default": 2, "min": 0, "max": 150, "step": 1}),
-            },
-            "optional": {
-                "latent_mask": ("MASK", ),
-                "pos": ("STRING", {"multiline": True, "default": "", "placeholder": ""}),
-                "mask_stack": ("MASK_STACK2",),  
-                "sample_stack": ("SAMPLE_STACK",),
-            },
-        }
-
-    RETURN_TYPES = ("RUN_CONTEXT", "IMAGE", "MASK", "IMAGE")
-    RETURN_NAMES = ("context", "image",  "cropped_mask","cropped_image")
-    FUNCTION = "run"
-    CATEGORY = "Apt_Preset/chx_ksample"
-
-    def run(self, context, seed, latent_image=None, latent_mask=None, denoise=1, pos="",
-            work_pattern="ksampler", sample_stack=None, mask_sampling=False, out_smoothness=0.0,
-            mask_stack=None,  crop_mode="no_crop", long_side=512,
-            expand_width=0, expand_height=0, ):
-        
-        divisible_by=1
-        if latent_mask is None:
-            batch_size, height, width, _ = latent_image.shape
-            latent_mask = torch.ones((batch_size, height, width), dtype=torch.float32)
-            
-        vae = context.get("vae")
-        model = context.get("model")
-        clip = context.get("clip")
-
-        if sample_stack is not None:
-            steps, cfg, sampler, scheduler = sample_stack   
-            if steps == 0: 
-                steps = context.get("steps")
-            if cfg == 0: 
-                cfg = context.get("cfg")
-            if scheduler == None: 
-                scheduler = context.get("scheduler")
-            if sampler == None: 
-                sampler = context.get("sampler")    
-        else:
-            steps = context.get("steps")       
-            cfg = context.get("cfg")
-            scheduler = context.get("scheduler")
-            sampler = context.get("sampler")  
-
-        guidance = context.get("guidance", 3.5)
-        positive = context.get("positive", None)
-        negative = context.get("negative", None)
-        if pos and pos.strip(): 
-            positive, = CLIPTextEncode().encode(clip, pos)
-
-        background_tensor = None
-        background_mask_tensor = None
-        cropped_image_tensor = None
-        cropped_mask_tensor = None
-        stitch = None
-
-        if latent_image is not None and latent_mask is not None :
-            background_tensor, background_mask_tensor, cropped_image_tensor, cropped_mask_tensor, stitch = Image_solo_crop().inpaint_crop(
-                    image=latent_image,
-                    crop_mode = crop_mode,
-                    long_side = long_side,  
-                    upscale_method ="bicubic", 
-                    expand_width = expand_width, 
-                    expand_height = expand_height, 
-                    auto_expand_square=False,
-                    divisible_by = divisible_by,
-                    mask=latent_mask, 
-                    mask_stack=mask_stack, 
-                    crop_img_bj="image")
-
-            processed_image = cropped_image_tensor     
-            processed_mask = cropped_mask_tensor
-
-            if work_pattern == "only_adjust_mask": 
-                return (context, latent_image, cropped_mask_tensor, cropped_image_tensor)
-
-            encoded_result = encode(vae, processed_image)[0]
-            if isinstance(encoded_result, dict):
-                if "samples" in encoded_result:
-                    encoded_latent = encoded_result["samples"]
-                else:
-                    raise ValueError(f"Encoded result dict doesn't contain 'samples' key. Keys: {list(encoded_result.keys())}")
-            elif torch.is_tensor(encoded_result):
-                encoded_latent = encoded_result
-            else:
-                try:
-                    encoded_latent = torch.tensor(encoded_result)
-                except Exception as e:
-                    raise TypeError(f"Cannot convert encoded result to tensor. Type: {type(encoded_result)}, Error: {e}")
-
-            if encoded_latent.dim() == 5:
-                if encoded_latent.shape[2] == 1:
-                    encoded_latent = encoded_latent.squeeze(2)
-                else:
-                     encoded_latent = encoded_latent.view(encoded_latent.shape[0], 
-                                                    encoded_latent.shape[1], 
-                                                    encoded_latent.shape[3], 
-                                                    encoded_latent.shape[4])
-            elif encoded_latent.dim() == 3:
-                encoded_latent = encoded_latent.unsqueeze(0)
-            elif encoded_latent.dim() != 4:
-                raise ValueError(f"Unexpected latent dimensions: {encoded_latent.dim()}. Expected 4D tensor (B,C,H,W). Shape: {encoded_latent.shape}")
-
-            if encoded_latent.size(0) > 1:
-                encoded_latent = encoded_latent[:1]
-
-            latent2 = encoded_latent              
-            if not isinstance(latent2, dict):
-                if torch.is_tensor(latent2):
-                    latent2 = {"samples": latent2}
-                else:
-                    raise ValueError(f"Unexpected latent format: {type(latent2)}")
-            if "samples" not in latent2:
-                raise ValueError("Latent dictionary must contain 'samples' key")
-
-            if mask_sampling == False:
-                latent3 = latent2
-            else:
-                if processed_mask is not None:
-                    if not torch.is_tensor(processed_mask):
-                        processed_mask = torch.tensor(processed_mask)
-                    if processed_mask.dim() == 3:
-                        processed_mask = processed_mask.unsqueeze(0)
-                    import copy
-                    latent3 = copy.deepcopy(latent2)
-                    if processed_mask.shape[1] == 1:
-                        processed_mask = processed_mask.repeat(1, 4, 1, 1)                    
-                    latent3["noise_mask"] = processed_mask
-                else:
-                    latent3 = latent2
-
-            result = common_ksampler(model, seed, steps, cfg, sampler, scheduler, positive, negative, latent3, denoise=denoise)
-            latent_result = result[0]
-            output_image = decode(vae, latent_result)[0]
-
-            fimage, output_image, original_image = Image_solo_stitch().inpaint_stitch(
-                inpainted_image=output_image,
-                smoothness=out_smoothness, 
-                mask=cropped_mask_tensor, 
-                stitch=stitch, 
-                blend_factor=1.0, 
-                blend_mode="normal", 
-                opacity=1.0, 
-                stitch_mode="crop_mask", 
-                recover_method="bicubic")
-
-            latent = encode(vae, output_image)[0]
-            context = new_context(context, latent=latent, images=output_image)
-
-            return (context, output_image, cropped_mask_tensor, cropped_image_tensor)
-
-
-
-
-
-class chx_Ksampler_Kontext_inpaint:   
+class XXXchx_Ksampler_Kontext_inpaint:   
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -2609,6 +2437,204 @@ class chx_Ksampler_Kontext_inpaint:
             context = new_context(context, latent=latent, images=output_image)
 
             return (context, output_image, cropped_mask_tensor, cropped_image_tensor)
+
+
+
+class chx_Ksampler_Kontext_inpaint:   
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "context": ("RUN_CONTEXT",),
+                "image": ("IMAGE", ),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "prompt_weight": ("FLOAT", {"default": 0.5, "min": 0, "max": 1, "step": 0.01}),
+                "denoise": ("FLOAT", {"default": 1, "min": 0, "max": 1, "step": 0.01}),
+                "work_pattern": (["ksampler", "only_adjust_mask"], {"default": "ksampler"}),
+                "mask_sampling": ("BOOLEAN", {"default": True, }),
+                "crop_mode": (["no_crop", "no_scale_crop", "scale_crop_image"], {"default": "no_scale_crop"}),            
+                "long_side": ("INT", {"default": 512, "min": 16, "max": 2048, "step": 2}),
+                "expand_width": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 1}),
+                "expand_height": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 1}),
+                "out_smoothness": ("INT", {"default": 2, "min": 0, "max": 150, "step": 1}),
+            },
+            "optional": {
+                "mask": ("MASK", ),
+                "pos": ("STRING", {"multiline": True, "default": ""}),
+                "mask_stack": ("MASK_STACK2",),  
+                "sample_stack": ("SAMPLE_STACK",),
+            },
+        }
+
+    RETURN_TYPES = ("RUN_CONTEXT", "IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("context",  "image",  "cropped_mask", "cropped_image")
+    FUNCTION = "run"
+    CATEGORY = "Apt_Preset/🚫Deprecated/🚫"
+
+    def run(self, context, seed, image=None, mask=None, denoise=1, prompt_weight=0.5, pos="",
+            work_pattern="ksampler", sample_stack=None, mask_sampling=True, out_smoothness=2,
+            mask_stack=None, crop_mode="no_crop", long_side=512,
+            expand_width=0, expand_height=0, ):
+        
+        divisible_by=1
+        if mask is None:
+            batch_size, height, width, _ = image.shape
+            mask = torch.ones((batch_size, height, width), dtype=torch.float32)
+            
+        vae = context.get("vae")
+        model = context.get("model")
+        clip = context.get("clip")
+
+        if sample_stack is not None:
+            steps, cfg, sampler, scheduler = sample_stack   
+            if steps == 0: 
+                steps = context.get("steps")
+            if cfg == 0: 
+                cfg = context.get("cfg")
+            if scheduler == None: 
+                scheduler = context.get("scheduler")
+            if sampler == None: 
+                sampler = context.get("sampler")    
+        else:
+            steps = context.get("steps")       
+            cfg = context.get("cfg")
+            scheduler = context.get("scheduler")
+            sampler = context.get("sampler")  
+
+        guidance = context.get("guidance", 3.5)
+        positive = context.get("positive", None)
+        negative = context.get("negative", None)
+        if pos and pos.strip(): 
+            positive, = CLIPTextEncode().encode(clip, pos)
+
+        background_tensor = None
+        background_mask_tensor = None
+        cropped_image_tensor = None
+        cropped_mask_tensor = None
+        stitch = None
+
+        if image is not None and mask is not None :
+            background_tensor, background_mask_tensor, cropped_image_tensor, cropped_mask_tensor, stitch = Image_solo_crop().inpaint_crop(
+                    image=image,
+                    crop_mode = crop_mode,
+                    long_side = long_side,  
+                    upscale_method ="bicubic", 
+                    expand_width = expand_width, 
+                    expand_height = expand_height, 
+                    auto_expand_square=False,
+                    divisible_by = divisible_by,
+                    mask=mask, 
+                    mask_stack=mask_stack, 
+                    crop_img_bj="image")
+
+            processed_image = cropped_image_tensor
+            processed_mask = cropped_mask_tensor
+
+            if work_pattern == "only_adjust_mask": 
+                return  (context, image, cropped_mask_tensor, cropped_image_tensor)
+
+            encoded_result = encode(vae, processed_image)[0]
+            if isinstance(encoded_result, dict):
+                if "samples" in encoded_result:
+                    encoded_latent = encoded_result["samples"]
+                else:
+                    raise ValueError(f"Encoded result dict doesn't contain 'samples' key. Keys: {list(encoded_result.keys())}")
+            elif torch.is_tensor(encoded_result):
+                encoded_latent = encoded_result
+            else:
+                try:
+                    encoded_latent = torch.tensor(encoded_result)
+                except Exception as e:
+                    raise TypeError(f"Cannot convert encoded result to tensor. Type: {type(encoded_result)}, Error: {e}")
+
+            if encoded_latent.dim() == 5:
+                if encoded_latent.shape[2] == 1:
+                    encoded_latent = encoded_latent.squeeze(2)
+                else:
+                     encoded_latent = encoded_latent.view(encoded_latent.shape[0], 
+                                                    encoded_latent.shape[1], 
+                                                    encoded_latent.shape[3], 
+                                                    encoded_latent.shape[4])
+            elif encoded_latent.dim() == 3:
+                encoded_latent = encoded_latent.unsqueeze(0)
+            elif encoded_latent.dim() != 4:
+                raise ValueError(f"Unexpected latent dimensions: {encoded_latent.dim()}. Expected 4D tensor (B,C,H,W). Shape: {encoded_latent.shape}")
+
+            if encoded_latent.size(0) > 1:
+                encoded_latent = encoded_latent[:1]
+
+            latent2 = encoded_latent              
+            if not isinstance(latent2, dict):
+                if torch.is_tensor(latent2):
+                    latent2 = {"samples": latent2}
+                else:
+                    raise ValueError(f"Unexpected latent format: {type(latent2)}")
+            if "samples" not in latent2:
+                raise ValueError("Latent dictionary must contain 'samples' key")
+
+            if mask_sampling == False:
+                latent3 = latent2
+            else:
+                if processed_mask is not None:
+                    if not torch.is_tensor(processed_mask):
+                        processed_mask = torch.tensor(processed_mask, device=encoded_latent.device)
+                    if processed_mask.dim() == 3:
+                        processed_mask = processed_mask.unsqueeze(0)
+                    latent_h, latent_w = encoded_latent.shape[2], encoded_latent.shape[3]
+                    processed_mask = torch.nn.functional.interpolate(
+                        processed_mask.unsqueeze(1),
+                        size=(latent_h, latent_w),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(1)
+                    if processed_mask.shape[1] == 1:
+                        processed_mask = processed_mask.repeat(1, 4, 1, 1)
+                    processed_mask = torch.clamp(processed_mask, 0.0, 1.0)
+                    latent3 = copy.deepcopy(latent2)
+                    latent3["noise_mask"] = processed_mask
+                else:
+                    latent3 = latent2
+
+            if work_pattern == "ksampler":
+                if positive is not None and prompt_weight > 0:
+                    latent_samples = None
+                    if isinstance(latent3, dict) and "samples" in latent3:
+                        latent_samples = latent3["samples"]
+                    elif torch.is_tensor(latent3):
+                        latent_samples = latent3                     
+                    if latent_samples is not None and latent_samples.numel() > 0:
+                        try:
+                            influence = 8 * prompt_weight * (prompt_weight - 1) - 6 * prompt_weight + 6
+                            scaled_latent = latent_samples * influence
+                            positive = node_helpers.conditioning_set_values(positive, {"reference_latents": [scaled_latent]}, append=True)
+                        except Exception as e:
+                            print(f"Warning: Failed to process kontext sampling: {e}")
+
+            positive = node_helpers.conditioning_set_values(positive, {"guidance": guidance})
+
+            result = common_ksampler(model, seed, steps, cfg, sampler, scheduler, positive, negative, latent3, denoise=denoise)
+            latent_result = result[0]
+            output_image = decode(vae, latent_result)[0]
+
+            fimage, output_image, original_image = Image_solo_stitch().inpaint_stitch(
+                inpainted_image=output_image,
+                smoothness=out_smoothness, 
+                mask=cropped_mask_tensor, 
+                stitch=stitch, 
+                blend_factor=1.0, 
+                blend_mode="normal", 
+                opacity=1.0, 
+                stitch_mode="crop_mask", 
+                recover_method="bicubic")
+
+            latent = encode(vae, output_image)[0]
+            context = new_context(context, latent=latent, images=output_image)
+
+            return (context, output_image, cropped_mask_tensor, cropped_image_tensor)
+
+
+
+
 
 
 
@@ -6247,214 +6273,6 @@ class Image_tensor_Converter:
 
 
 
-class XXImage_CnMapMix:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "blur_1": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
-                "blur_2": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
-                "diff_sensitivity": ("FLOAT", {"default": 0.0, "min": -0.2, "max": 0.2, "step": 0.01}),
-                "diff_blur": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
-                "blend_mode": (
-                    ["normal", "multiply", "screen", "overlay", "soft_light", 
-                     "difference", "add", "subtract", "lighten", "darken"],
-                ),
-                "blend_factor": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "contrast": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.1}),
-                "brightness": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
-                "mask2_smoothness": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}),
-                "invert_mask": ("BOOLEAN", {"default": False}),
-            },
-            "optional": {
-                "image1": ("IMAGE",),  # 原image2
-                "image2": ("IMAGE",),  # 原image1
-                "mask2": ("MASK",),    # 原mask1
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAME = ("image",)
-    FUNCTION = "fuse_depth"
-    CATEGORY = "Apt_Preset/image"
-    DESCRIPTION = ""
-
-    def smoothness_mask(self, mask, smoothness):
-        if smoothness <= 0:
-            return mask
-        kernel_size = smoothness * 2 + 1
-        sigma = smoothness / 3
-        kernel = torch.linspace(-(kernel_size//2), kernel_size//2, kernel_size, device=mask.device)
-        kernel = torch.exp(-0.5 * (kernel / sigma)**2)
-        kernel = kernel / kernel.sum()
-        kernel_2d = torch.outer(kernel, kernel).unsqueeze(0).unsqueeze(0)
-        padding = kernel_size // 2
-        batch_size, height, width, channels = mask.shape
-        blurred = torch.nn.functional.conv2d(
-            mask.permute(0, 3, 1, 2), 
-            kernel_2d.repeat(channels, 1, 1, 1), 
-            padding=padding, 
-            groups=channels
-        ).permute(0, 2, 3, 1)
-        return blurred
-
-    def process_mask(self, mask, target_shape, device):
-        if isinstance(mask, torch.Tensor):
-            mask = mask.squeeze()
-            if len(mask.shape) == 3:
-                mask = mask[0]
-            mask_np = (mask.cpu().numpy() * 255).astype(np.uint8)
-            mask_pil = Image.fromarray(mask_np).convert("L")
-        else:
-            mask_pil = mask.convert("L") if hasattr(mask, 'convert') else Image.fromarray(mask).convert("L")
-        
-        target_h, target_w = target_shape[1], target_shape[2]
-        if mask_pil.size != (target_w, target_h):
-            mask_pil = mask_pil.resize((target_w, target_h), Image.LANCZOS)
-        
-        mask_np = np.array(mask_pil).astype(np.float32) / 255.0
-        mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(-1).to(device)
-        
-        return torch.clamp(mask_tensor, 0.0, 1.0)
-
-    def fuse_depth(self, blur_1, blur_2, diff_blur, blend_mode, 
-                  blend_factor, contrast, brightness, mask2_smoothness,
-                  diff_sensitivity, invert_mask,
-                  image1=None, image2=None, mask2=None):
-        # 处理image1和image2的默认逻辑（参数名对调）
-        if image1 is None and image2 is not None:
-            image1 = image2.clone()
-        elif image2 is None and image1 is not None:
-            image2 = image1.clone()
-        elif image1 is None and image2 is None:
-            raise ValueError("至少需要提供image1或image2中的一个")
-        
-        # 尺寸对齐逻辑（参数名对调）
-        if image1.shape != image2.shape:
-            image2 = image2.permute(0, 3, 1, 2)
-            image2 = comfy.utils.common_upscale(
-                image2,
-                image1.shape[2],
-                image1.shape[1],
-                upscale_method='bicubic',
-                crop='center'
-            )
-            image2 = image2.permute(0, 2, 3, 1)
-
-        # 处理mask2（原mask1）
-        if mask2 is None:
-            mask2 = torch.ones_like(image1[..., :1], device=image1.device)
-        else:
-            mask2 = self.process_mask(mask2, image1.shape, image2.device)
-        
-        # 遮罩反转
-        if invert_mask:
-            mask2 = 1.0 - mask2
-        
-        # 平滑处理
-        mask2 = self.smoothness_mask(mask2, mask2_smoothness)
-
-        # 图像转灰度（参数名对调）
-        if image1.shape[-1] == 3:
-            image1 = (image1 * torch.tensor([0.299, 0.587, 0.114], device=image1.device)).sum(dim=-1, keepdim=True)
-        else:
-            image1 = image1[:, :, :, 0:1]
-
-        if image2.shape[-1] == 3:
-            image2 = (image2 * torch.tensor([0.299, 0.587, 0.114], device=image2.device)).sum(dim=-1, keepdim=True)
-        else:
-            image2 = image2[:, :, :, 0:1]
-
-        # 设备对齐
-        image1 = image1.to(image2.device)
-        mask2 = mask2.to(image2.device)
-        
-        # 关键修改：模糊参数与图像的对应关系对调
-        # 原逻辑：blurred_a = image1模糊（blur_1），blurred_b = image2模糊（blur_2）
-        # 现在：image1和image2对调，因此blur_1对应新image1，blur_2对应新image2
-        blurred_a = self.gaussian_blur(image1, blur_1)  # 新image1（原image2）使用blur_1
-        blurred_b = self.gaussian_blur(image2, blur_2)  # 新image2（原image1）使用blur_2
-
-        # 差异计算与融合逻辑
-        diff = torch.abs(blurred_a - blurred_b) - diff_sensitivity
-        mask_raw = (diff > 0).float()
-        mask_blurred = self.gaussian_blur(mask_raw, diff_blur)
-
-        mode_result = self.apply_blend_mode(blurred_a, blurred_b, blend_mode)
-        
-        blended_mode = blurred_a * (1 - blend_factor) + mode_result * blend_factor
-        fused = blurred_a * (1 - mask2 * mask_blurred) + blended_mode * (mask2 * mask_blurred)
-
-        # 对比度和亮度调整
-        fused = (fused - 0.5) * contrast + 0.5 + brightness
-        fused = torch.clamp(fused, 0.0, 1.0)
-
-        # 转RGB输出
-        fused_rgb = torch.cat([fused, fused, fused], dim=-1)
-        return (fused_rgb,)
-
-    def apply_blend_mode(self, img1, img2, mode):
-        if mode == "normal":
-            return img2
-        elif mode == "multiply":
-            return img1 * img2
-        elif mode == "screen":
-            return 1 - (1 - img1) * (1 - img2)
-        elif mode == "overlay":
-            return torch.where(img1 <= 0.5, 2 * img1 * img2, 1 - 2 * (1 - img1) * (1 - img2))
-        elif mode == "soft_light":
-            factor = 2 * img2 - 1
-            low_values = img1 + factor * (img1 - img1 * img1)
-            high_values = img1 + factor * (torch.sqrt(img1) - img1)
-            return torch.where(img2 <= 0.5, low_values, high_values)
-        elif mode == "difference":
-            return torch.abs(img1 - img2)
-        elif mode == "add":
-            return torch.clamp(img1 + img2, 0.0, 1.0)
-        elif mode == "subtract":
-            return torch.clamp(img1 - img2, 0.0, 1.0)
-        elif mode == "lighten":
-            return torch.max(img1, img2)
-        elif mode == "darken":
-            return torch.min(img1, img2)
-        return img2
-
-    def gaussian_blur(self, image, radius):
-        if radius == 0:
-            return image
-        
-        kernel_size = int(radius * 6 + 1)
-        if kernel_size % 2 == 0:
-            kernel_size += 1
-        if kernel_size < 3:
-            kernel_size = 3
-        
-        sigma = radius if radius > 0 else 0.5
-        
-        kernel = torch.linspace(-(kernel_size//2), kernel_size//2, kernel_size, device=image.device)
-        kernel = torch.exp(-0.5 * (kernel / sigma)**2)
-        kernel = kernel / kernel.sum()
-        
-        kernel_2d = torch.outer(kernel, kernel).unsqueeze(0).unsqueeze(0)
-        padding = kernel_size // 2
-        
-        batch_size, height, width, channels = image.shape
-        blurred = torch.nn.functional.conv2d(
-            image.permute(0, 3, 1, 2),
-            kernel_2d.repeat(channels, 1, 1, 1),
-            padding=padding,
-            groups=channels
-        ).permute(0, 2, 3, 1)
-        
-        return blurred
-
-
-
-
-
 class Image_CnMapMix:
     def __init__(self):
         pass
@@ -6683,9 +6501,186 @@ class Image_CnMapMix:
 
 
 
+class chx_Ksampler_inpaint:   
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "context": ("RUN_CONTEXT",),
+                "latent_image": ("IMAGE", ),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "denoise": ("FLOAT", {"default": 0.3, "min": 0, "max": 1, "step": 0.01}),
+                "work_pattern": (["ksampler", "only_adjust_mask"], {"default": "ksampler"}),
+                "crop_mode": (["no_crop", "no_scale_crop", "scale_crop_image", ], {"default": "no_scale_crop"}),
+                "long_side": ("INT", {"default": 512, "min": 16, "max": 2048, "step": 2}),
+                "expand_width": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 1}),
+                "expand_height": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 1}),     
+                "out_smoothness": ("INT", {"default": 2, "min": 0, "max": 150, "step": 1}),
+            },
+            "optional": {
+                "latent_mask": ("MASK", ),
+                "pos": ("STRING", {"multiline": True, "default": "", "placeholder": ""}),
+                "mask_stack": ("MASK_STACK2",),  
+                "sample_stack": ("SAMPLE_STACK",),
+            },
+        }
 
+    RETURN_TYPES = ("RUN_CONTEXT", "IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("context", "image",  "cropped_mask","cropped_image")
+    FUNCTION = "run"
+    CATEGORY = "Apt_Preset/chx_ksample"
 
+    def run(self, context, seed, latent_image=None, latent_mask=None, denoise=1, pos="",
+            work_pattern="ksampler", sample_stack=None, mask_sampling=True, out_smoothness=0.0,
+            mask_stack=None,  crop_mode="no_crop", long_side=512,
+            expand_width=0, expand_height=0, ):
+        
+        divisible_by=1
+        if latent_mask is None:
+            batch_size, height, width, _ = latent_image.shape
+            latent_mask = torch.ones((batch_size, height, width), dtype=torch.float32)
+            
+        vae = context.get("vae")
+        model = context.get("model")
+        clip = context.get("clip")
 
+        if sample_stack is not None:
+            steps, cfg, sampler, scheduler = sample_stack   
+            if steps == 0: 
+                steps = context.get("steps")
+            if cfg == 0: 
+                cfg = context.get("cfg")
+            if scheduler == None: 
+                scheduler = context.get("scheduler")
+            if sampler == None: 
+                sampler = context.get("sampler")    
+        else:
+            steps = context.get("steps")       
+            cfg = context.get("cfg")
+            scheduler = context.get("scheduler")
+            sampler = context.get("sampler")  
+
+        guidance = context.get("guidance", 3.5)
+        positive = context.get("positive", None)
+        negative = context.get("negative", None)
+        if pos and pos.strip(): 
+            positive, = CLIPTextEncode().encode(clip, pos)
+
+        background_tensor = None
+        background_mask_tensor = None
+        cropped_image_tensor = None
+        cropped_mask_tensor = None
+        stitch = None
+
+        if latent_image is not None and latent_mask is not None :
+            background_tensor, background_mask_tensor, cropped_image_tensor, cropped_mask_tensor, stitch = Image_solo_crop().inpaint_crop(
+                    image=latent_image,
+                    crop_mode = crop_mode,
+                    long_side = long_side,  
+                    upscale_method ="bicubic", 
+                    expand_width = expand_width, 
+                    expand_height = expand_height, 
+                    auto_expand_square=False,
+                    divisible_by = divisible_by,
+                    mask=latent_mask, 
+                    mask_stack=mask_stack, 
+                    crop_img_bj="image")
+
+            processed_image = cropped_image_tensor     
+            processed_mask = cropped_mask_tensor
+
+            if work_pattern == "only_adjust_mask": 
+                return (context, latent_image, cropped_mask_tensor, cropped_image_tensor)
+
+            encoded_result = encode(vae, processed_image)[0]
+            if isinstance(encoded_result, dict):
+                if "samples" in encoded_result:
+                    encoded_latent = encoded_result["samples"]
+                else:
+                    raise ValueError(f"Encoded result dict doesn't contain 'samples' key. Keys: {list(encoded_result.keys())}")
+            elif torch.is_tensor(encoded_result):
+                encoded_latent = encoded_result
+            else:
+                try:
+                    encoded_latent = torch.tensor(encoded_result)
+                except Exception as e:
+                    raise TypeError(f"Cannot convert encoded result to tensor. Type: {type(encoded_result)}, Error: {e}")
+
+            if encoded_latent.dim() == 5:
+                if encoded_latent.shape[2] == 1:
+                    encoded_latent = encoded_latent.squeeze(2)
+                else:
+                     encoded_latent = encoded_latent.view(encoded_latent.shape[0], 
+                                                    encoded_latent.shape[1], 
+                                                    encoded_latent.shape[3], 
+                                                    encoded_latent.shape[4])
+            elif encoded_latent.dim() == 3:
+                encoded_latent = encoded_latent.unsqueeze(0)
+            elif encoded_latent.dim() != 4:
+                raise ValueError(f"Unexpected latent dimensions: {encoded_latent.dim()}. Expected 4D tensor (B,C,H,W). Shape: {encoded_latent.shape}")
+
+            if encoded_latent.size(0) > 1:
+                encoded_latent = encoded_latent[:1]
+
+            latent2 = encoded_latent              
+            if not isinstance(latent2, dict):
+                if torch.is_tensor(latent2):
+                    latent2 = {"samples": latent2}
+                else:
+                    raise ValueError(f"Unexpected latent format: {type(latent2)}")
+            if "samples" not in latent2:
+                raise ValueError("Latent dictionary must contain 'samples' key")
+
+            # 核心修复：遮罩适配（匹配latent尺寸+通道数）
+            if mask_sampling == False:
+                latent3 = latent2
+            else:
+                if processed_mask is not None:
+                    if not torch.is_tensor(processed_mask):
+                        processed_mask = torch.tensor(processed_mask, device=encoded_latent.device)
+                    # 调整遮罩维度为 (B, 1, H, W)
+                    if processed_mask.dim() == 2:
+                        processed_mask = processed_mask.unsqueeze(0).unsqueeze(1)
+                    elif processed_mask.dim() == 3:
+                        processed_mask = processed_mask.unsqueeze(1)
+                    # 缩放到latent尺寸
+                    latent_h, latent_w = encoded_latent.shape[2], encoded_latent.shape[3]
+                    processed_mask = torch.nn.functional.interpolate(
+                        processed_mask,
+                        size=(latent_h, latent_w),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                    # 扩展为4通道（匹配latent）
+                    if processed_mask.shape[1] == 1:
+                        processed_mask = processed_mask.repeat(1, 4, 1, 1)
+                    # 归一化遮罩值
+                    processed_mask = torch.clamp(processed_mask, 0.0, 1.0)
+                    
+                    latent3 = copy.deepcopy(latent2)
+                    latent3["noise_mask"] = processed_mask
+                else:
+                    latent3 = latent2
+
+            result = common_ksampler(model, seed, steps, cfg, sampler, scheduler, positive, negative, latent3, denoise=denoise)
+            latent_result = result[0]
+            output_image = decode(vae, latent_result)[0]
+
+            fimage, output_image, original_image = Image_solo_stitch().inpaint_stitch(
+                inpainted_image=output_image,
+                smoothness=out_smoothness, 
+                mask=cropped_mask_tensor, 
+                stitch=stitch, 
+                blend_factor=1.0, 
+                blend_mode="normal", 
+                opacity=1.0, 
+                stitch_mode="crop_mask", 
+                recover_method="bicubic")
+
+            latent = encode(vae, output_image)[0]
+            context = new_context(context, latent=latent, images=output_image)
+
+            return (context, output_image, cropped_mask_tensor, cropped_image_tensor)
 
 
 
