@@ -1219,7 +1219,6 @@ class sum_stack_QwenEditPlus:
     def _process_image_channels(self, image):
         if image is None:
             return None
-        # 处理4通道（含alpha）转3通道，黑色背景填充
         if len(image.shape) == 4:
             b, h, w, c = image.shape
             if c == 4:
@@ -1244,10 +1243,8 @@ class sum_stack_QwenEditPlus:
     def QWENencode(self, context=None, prompt="", model=None, lora_stack=None, union_controlnet=None,
                    image1=None, image2=None, image3=None, vl_size=384, latent_image=None, latent_mask=None,
                    auto_resize="crop", union_stack=None, system_prompt=""):
-        # 兼容union_stack参数
         if union_stack is not None and union_controlnet is None:
             union_controlnet = union_stack
-        # 从context获取默认模型、clip、vae等
         if model is None:
             model = context.get("model", None)
         if prompt == "":
@@ -1257,32 +1254,34 @@ class sum_stack_QwenEditPlus:
         vae = context.get("vae", None)
         latent = context.get("latent", None)
         
-        # 处理图像通道（去除alpha，转3通道）
         image1 = self._process_image_channels(image1)
         image2 = self._process_image_channels(image2)
         image3 = self._process_image_channels(image3)
         images = [image1, image2, image3]
         
-        # 处理视觉编码用图像（vl_size缩放，仅用于CLIP特征提取）
         images_vl = []
+        min_size = 64
         for image in images:
             if image is not None:
-                samples = image.movedim(-1, 1)  # BHWC -> BCHW
+                samples = image.movedim(-1, 1)
+                orig_h, orig_w = samples.shape[2], samples.shape[3]
                 total_pixels = vl_size * vl_size
-                scale_by = math.sqrt(total_pixels / (samples.shape[3] * samples.shape[2]))
-                width = round(samples.shape[3] * scale_by)
-                height = round(samples.shape[2] * scale_by)
-                # 缩放至vl_size对应的尺寸（保持比例）
-                scaled_img = comfy.utils.common_upscale(samples, width, height, "area", "disabled")
-                images_vl.append(scaled_img.movedim(1, -1))  # BCHW -> BHWC
+                orig_pixels = orig_h * orig_w
+                scale_by = math.sqrt(total_pixels / orig_pixels)
+                width = max(round(orig_w * scale_by), min_size)
+                height = max(round(orig_h * scale_by), min_size)
+                max_ratio = 10.0
+                if width / height > max_ratio:
+                    width = int(height * max_ratio)
+                elif height / width > max_ratio:
+                    height = int(width * max_ratio)
+                scaled_img = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
+                images_vl.append(scaled_img.movedim(1, -1))
         
-        # 处理生成图尺寸适配：统一参考图与latent_image尺寸（关键修复）
-        target_h, target_w = 1024, 1024  # 默认尺寸
+        target_h, target_w = 1024, 1024
         if latent_image is not None:
             latent_image = self._process_image_channels(latent_image)
-            # 获取生成图目标尺寸（BHWC）
             target_h, target_w = latent_image.shape[1], latent_image.shape[2]
-            # 对每张参考图进行尺寸适配（仅一次缩放，无二次处理）
             for i in range(len(images)):
                 if images[i] is not None:
                     if auto_resize == "stretch":
@@ -1290,30 +1289,32 @@ class sum_stack_QwenEditPlus:
                     else:
                         images[i] = self.auto_resize(images[i], target_h, target_w, auto_resize)
         
-        # 生成参考latents（直接使用已适配尺寸的图像，无二次缩放）
         ref_latents = []
         image_prompt = ""
         for i, image in enumerate(images):
             if image is not None:
                 image_prompt += f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>"
                 if vae is not None:
-                    # 直接使用已适配尺寸的图像，仅调整为8的倍数（vae编码要求）
-                    samples = image.movedim(-1, 1)  # BHWC -> BCHW
-                    # 确保尺寸是8的倍数（不改变比例）
-                    width = (samples.shape[3] // 8) * 8
-                    height = (samples.shape[2] // 8) * 8
-                    if width != samples.shape[3] or height != samples.shape[2]:
+                    samples = image.movedim(-1, 1)
+                    # 二次校验尺寸，强制≥64
+                    orig_sample_h = max(samples.shape[2], 64)
+                    orig_sample_w = max(samples.shape[3], 64)
+                    if samples.shape[2] != orig_sample_h or samples.shape[3] != orig_sample_w:
+                        samples = comfy.utils.common_upscale(samples, orig_sample_w, orig_sample_h, "bicubic", "disabled")
+                    # 计算8的倍数尺寸，强制≥64
+                    width = (orig_sample_w // 8) * 8
+                    height = (orig_sample_h // 8) * 8
+                    width = max(width, 64)
+                    height = max(height, 64)
+                    if width != orig_sample_w or height != orig_sample_h:
                         samples = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
-                    # 编码为latent（保留完整特征）
                     ref_latents.append(vae.encode(samples.movedim(1, -1)))
         
-        # CLIP编码（结合图像prompt和文本prompt）
         llama_template = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{{}}<|im_end|>\n<|im_start|>assistant\n"
         full_prompt = image_prompt + prompt
         tokens = clip.tokenize(full_prompt, images=images_vl, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         
-        # 添加参考latents到conditioning
         if len(ref_latents) > 0:
             conditioning = node_helpers.conditioning_set_values(
                 conditioning, {"reference_latents": ref_latents}, append=True
@@ -1321,45 +1322,36 @@ class sum_stack_QwenEditPlus:
         positive = conditioning
         negative = self.zero_out_simple(positive)
         
-        # 应用controlnet
         if union_controlnet is not None:
             positive, negative = Apply_CN_union().apply_union_stack(
                 positive, negative, vae, union_controlnet, extra_concat=[]
             )
         
-        # 处理latent_image（生成目标latent）
         if latent_image is not None:
             positive, negative, latent = self.addConditioning(positive, negative, latent_image, vae, latent_mask)
         
-        # 更新context并返回
         context = new_context(context, clip=clip, positive=positive, negative=negative, model=model, latent=latent)
         return (context, model, positive, negative, latent, clip, vae)
     
     def addConditioning(self, positive, negative, pixels, vae, mask=None):
         pixels = self._process_image_channels(pixels)
-        # 确保尺寸是8的倍数
         h = (pixels.shape[1] // 8) * 8
         w = (pixels.shape[2] // 8) * 8
         orig_pixels = pixels
-        # 裁剪或缩放至8的倍数
         if pixels.shape[1] != h or pixels.shape[2] != w:
             x_offset = (pixels.shape[1] - h) // 2
             y_offset = (pixels.shape[2] - w) // 2
             pixels = pixels[:, x_offset:x_offset + h, y_offset:y_offset + w, :]
         
-        # 处理mask
         if mask is not None:
-            # 调整mask尺寸与pixels一致
             mask = torch.nn.functional.interpolate(
                 mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])),
                 size=(pixels.shape[1], pixels.shape[2]),
                 mode="bilinear"
             )
-            # 应用mask（仅保留mask区域的像素信息）
             m = (1.0 - mask.round()).squeeze(1)
             for i in range(3):
                 pixels[:, :, :, i] = (pixels[:, :, :, i] - 0.5) * m + 0.5
-            # 编码latent
             concat_latent = vae.encode(pixels)
             out_latent = {
                 "samples": vae.encode(orig_pixels),
@@ -1369,7 +1361,6 @@ class sum_stack_QwenEditPlus:
             concat_latent = vae.encode(pixels)
             out_latent = {"samples": concat_latent}
         
-        # 将concat_latent添加到conditioning
         out = []
         for cond in [positive, negative]:
             c = node_helpers.conditioning_set_values(cond, {"concat_latent_image": concat_latent})
@@ -1379,59 +1370,51 @@ class sum_stack_QwenEditPlus:
         return (out[0], out[1], out_latent)
     
     def auto_resize(self, image: torch.Tensor, target_h: int, target_w: int, auto_resize: str) -> torch.Tensor:
-        """修复维度解析错误，统一尺寸适配逻辑"""
-        # 输入图像为BHWC格式
         batch, orig_h, orig_w, ch = image.shape
         target_h = max(target_h, 64)
         target_w = max(target_w, 64)
         orig_h = max(orig_h, 64)
         orig_w = max(orig_w, 64)
         
-        # 转换为BCHW用于缩放
         image_bchw = image.movedim(-1, 1)
         
         if auto_resize == "crop":
-            # 按目标尺寸比例缩放，裁剪中心区域（保留核心特征）
             scale = max(target_w / orig_w, target_h / orig_h)
             new_w = int(orig_w * scale)
             new_h = int(orig_h * scale)
-            # 缩放至足够覆盖目标尺寸
+            # 强制新尺寸≥目标尺寸，避免裁剪后不足
+            new_w = max(new_w, target_w)
+            new_h = max(new_h, target_h)
             scaled = comfy.utils.common_upscale(image_bchw, new_w, new_h, "bicubic", "disabled")
-            # 计算裁剪偏移（中心裁剪）
             x_offset = (new_w - target_w) // 2
             y_offset = (new_h - target_h) // 2
-            # 裁剪至目标尺寸
-            result = scaled[:, :, y_offset:y_offset + target_h, x_offset:x_offset + target_w]
+            # 裁剪后尺寸兜底，强制≥64
+            crop_h = min(target_h, new_h - y_offset)
+            crop_w = min(target_w, new_w - x_offset)
+            crop_h = max(crop_h, 64)
+            crop_w = max(crop_w, 64)
+            result = scaled[:, :, y_offset:y_offset + crop_h, x_offset:x_offset + crop_w]
         elif auto_resize == "pad":
-            # 按目标尺寸比例缩放，不足部分黑色填充（保持原比例）
             scale = min(target_w / orig_w, target_h / orig_h)
             new_w = int(orig_w * scale)
             new_h = int(orig_h * scale)
-            # 缩放至不超过目标尺寸
             scaled = comfy.utils.common_upscale(image_bchw, new_w, new_h, "bicubic", "disabled")
-            # 创建黑色背景
             black_bg = torch.zeros((batch, ch, target_h, target_w), dtype=image.dtype, device=image.device)
-            # 计算填充偏移（居中）
             x_offset = (target_w - new_w) // 2
             y_offset = (target_h - new_h) // 2
-            # 填充图像
             black_bg[:, :, y_offset:y_offset + new_h, x_offset:x_offset + new_w] = scaled
             result = black_bg
         
-        # 转换回BHWC格式
         result_bhwc = result.movedim(1, -1)
         return result_bhwc
     
     def stretch_resize(self, image: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
-        """强制拉伸至目标尺寸（保持特征完整）"""
-        # 输入图像为BHWC格式
+        target_h = max(target_h, 64)
+        target_w = max(target_w, 64)
         image_bchw = image.movedim(-1, 1)
-        # 直接拉伸至目标尺寸
         scaled = comfy.utils.common_upscale(image_bchw, target_w, target_h, "bicubic", "disabled")
-        # 转换回BHWC格式
         return scaled.movedim(1, -1)
     
-    # 还原你修改前的zero_out_simple方法（无报错版本）
     def zero_out_simple(self, conditioning):
         if not conditioning:
             return []
@@ -1450,11 +1433,6 @@ class sum_stack_QwenEditPlus:
 
 
 
-
-
-
-
-
 import node_helpers
 import comfy.utils
 import math
@@ -1466,6 +1444,7 @@ import os
 import copy
 import folder_paths
 import hashlib
+
 
 
 
@@ -1531,19 +1510,28 @@ class Easy_QwenEdit2509:
     def _auto_resize(self, image: torch.Tensor, target_h: int, target_w: int, auto_resize: str) -> torch.Tensor:
         batch, ch, orig_h, orig_w = image.shape
         
-        target_h = max(target_h, 64)
-        target_w = max(target_w, 64)
-        orig_h = max(orig_h, 64)
-        orig_w = max(orig_w, 64)
+        # 强制最小尺寸≥32（适配VAE 3×3卷积核）
+        target_h = max(target_h, 32)
+        target_w = max(target_w, 32)
+        orig_h = max(orig_h, 32)
+        orig_w = max(orig_w, 32)
         
         if auto_resize == "crop":
             scale = max(target_w / orig_w, target_h / orig_h)
             new_w = int(orig_w * scale)
             new_h = int(orig_h * scale)
+            # 强制新尺寸≥目标尺寸，避免裁剪后不足
+            new_w = max(new_w, target_w)
+            new_h = max(new_h, target_h)
             scaled = comfy.utils.common_upscale(image, new_w, new_h, "bicubic", "disabled")
             x_offset = (new_w - target_w) // 2
             y_offset = (new_h - target_h) // 2
-            result = scaled[:, :, y_offset:y_offset + target_h, x_offset:x_offset + target_w]
+            # 裁剪后强制宽高≥32，避免过小
+            crop_h = min(target_h, new_h - y_offset)
+            crop_w = min(target_w, new_w - x_offset)
+            crop_h = max(crop_h, 32)
+            crop_w = max(crop_w, 32)
+            result = scaled[:, :, y_offset:y_offset + crop_h, x_offset:x_offset + crop_w]
             
         elif auto_resize == "pad":
             scale = min(target_w / orig_w, target_h / orig_h)
@@ -1568,8 +1556,9 @@ class Easy_QwenEdit2509:
             y_offset = (new_h - target_h) // 2
             result = scaled[:, :, y_offset:y_offset + target_h, x_offset:x_offset + target_w]
         
-        final_w = max(64, (result.shape[3] // 8) * 8)
-        final_h = max(64, (result.shape[2] // 8) * 8)
+        # 最终尺寸确保是8的倍数且≥32
+        final_w = max(32, (result.shape[3] // 8) * 8)
+        final_h = max(32, (result.shape[2] // 8) * 8)
         
         if final_w != result.shape[3] or final_h != result.shape[2]:
             x_offset = (result.shape[3] - final_w) // 2
@@ -1618,8 +1607,17 @@ class Easy_QwenEdit2509:
         for i, image in enumerate(orig_images):
             if image is not None and vae is not None:
                 samples = image.movedim(-1, 1)
-                width, height = samples.shape[3], samples.shape[2]
-                scaled_img = comfy.utils.common_upscale(samples, width, height, "area", "disabled")
+                # 强制尺寸≥32，避免VAE卷积报错
+                orig_sample_h = max(samples.shape[2], 32)
+                orig_sample_w = max(samples.shape[3], 32)
+                if samples.shape[2] != orig_sample_h or samples.shape[3] != orig_sample_w:
+                    samples = comfy.utils.common_upscale(samples, orig_sample_w, orig_sample_h, "bicubic", "disabled")
+                # 计算8的倍数尺寸，仍强制≥32
+                width = (orig_sample_w // 8) * 8
+                height = (orig_sample_h // 8) * 8
+                width = max(width, 32)
+                height = max(height, 32)
+                scaled_img = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
                 ref_latents.append(vae.encode(scaled_img.movedim(1, -1)[:, :, :, :3]))
 
         tokens = clip.tokenize(image_prompt + prompt, images=images_vl, llama_template=llama_template)
@@ -1698,17 +1696,6 @@ class Easy_QwenEdit2509:
                 instruction = instruction.replace("{}", "")
             instruction_content = instruction
         return template_prefix + instruction_content + template_suffix
-
-
-
-
-
-
-
-
-
-
-
 
 
 
