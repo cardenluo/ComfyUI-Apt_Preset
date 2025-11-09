@@ -2492,6 +2492,7 @@ class Stack_inpaint:
         return (inpaint_sum_pack,)
 
 
+
 class pack_inpaint: #隐藏
     @classmethod
     def INPUT_TYPES(s):
@@ -2500,19 +2501,16 @@ class pack_inpaint: #隐藏
                 "vae": ("VAE",),
                 "positive": ("CONDITIONING",),
                 "negative": ("CONDITIONING",),
-
                 "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": "None"}),
                 "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
-                "image": ("IMAGE", ),  
-                "mask": ("MASK", ),    
+                "latent_image": ("IMAGE", ),  # 已改为 latent_image（IMAGE 类型）
+                "latent_mask": ("MASK", ),    # 关键修改：mask → latent_mask（统一参数名）
                 "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.01}),
                 "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
                 "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
                 "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
             },
-            "optional": {
-                        
-            }
+            "optional": {}
         }
 
     RETURN_TYPES = ("CONDITIONING","CONDITIONING","LATENT",)
@@ -2520,42 +2518,56 @@ class pack_inpaint: #隐藏
     FUNCTION = "apply_controlnet"
     CATEGORY = "Apt_Preset/chx_tool/controlnet"
 
+    def apply_controlnet(self, vae, positive, negative, control_net, latent_image, strength, smoothness, start_percent, end_percent, mask_mode="mask_black", latent_mask=None):
+        # 1. 编码图像为 latent（latent_image 是 IMAGE 类型，保持原逻辑）
+        latent = encode(vae, latent_image)[0] if latent_image is not None else None
 
-    def apply_controlnet(self, vae, positive, negative, control_net, image, strength, smoothness, start_percent, end_percent, mask_mode="mask_black", mask=None):
+        # 2. 有 latent_mask 时：处理遮罩并绑定到 latent；无则输出普通 latent
+        if latent_mask is not None:
+            # 遮罩平滑（smoothness > 0 生效）
+            if smoothness > 0:
+                latent_mask = smoothness_mask(latent_mask, smoothness)  # 统一用 latent_mask
+            # 给 latent 绑定遮罩
+            if latent is not None:
+                latent = set_mask(latent, latent_mask)  # 传入 latent_mask
 
-
-        if image is not None :
-           latent = encode(vae, image)[0]
-        if mask is not None and smoothness > 0:
-           mask =smoothness_mask(mask, smoothness)
-           latent = set_mask(latent, mask)
-
-#---------------------------------------------------没有cn就是inpaint--------------------------------------------#
+        #---------------------------------------------------没有cn就是inpaint--------------------------------------------#
         if control_net == "None":
-            positive, negative, latent = InpaintModelConditioning().encode(positive, negative, image, vae, mask, True)
-            return ( positive, negative, latent)
+            # 传入 latent_image 和 latent_mask 执行 inpaint（参数名统一）
+            positive, negative, latent = InpaintModelConditioning().encode(positive, negative, latent_image, vae, latent_mask, True)
+            return (positive, negative, latent)
 
-#---------------------------------------------------有cn分两情况,参考图处理--------------------------------------------#
+        #---------------------------------------------------有cn分两情况,参考图处理--------------------------------------------#
         else:
             control_net = ControlNetLoader().load_controlnet(control_net)[0]
+
             if mask_mode == "Ailmama":
-                out= InpaintingAliMamaApply().apply_inpaint_controlnet(positive, negative, control_net, vae, image, mask, strength, start_percent, end_percent)
-
+                out = InpaintingAliMamaApply().apply_inpaint_controlnet(
+                    positive, negative, control_net, vae, latent_image, latent_mask,  # 传 latent_mask
+                    strength, start_percent, end_percent
+                )
             else: 
-                processed_image = self.InpaintPreprocessor(image, mask, mask_mode)[0]
-
-                out= ControlNetApplyAdvanced().apply_controlnet(positive, negative, control_net, processed_image, strength, 
-                                                                start_percent, end_percent, vae=None, extra_concat=[])
-
-    
+                # 处理参考图（传入 latent_image 和 latent_mask）
+                processed_image = self.InpaintPreprocessor(latent_image, latent_mask, mask_mode)[0]
+                out = ControlNetApplyAdvanced().apply_controlnet(
+                    positive, negative, control_net, processed_image, strength, 
+                    start_percent, end_percent, vae=None, extra_concat=[]
+                )
+            
+            # 输出：有 latent_mask 则带遮罩，无则无遮罩
             return (out[0], out[1], latent)
 
-
-    def InpaintPreprocessor(self, image, mask, mask_color="mask_black"):
-        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(image.shape[1], image.shape[2]), mode="bilinear")
-        mask = mask.movedim(1, -1).expand((-1, -1, -1, 3))
+    def InpaintPreprocessor(self, image, latent_mask, mask_color="mask_black"):
+        # 遮罩尺寸适配图像尺寸（参数名改为 latent_mask）
+        latent_mask = torch.nn.functional.interpolate(
+            latent_mask.reshape((-1, 1, latent_mask.shape[-2], latent_mask.shape[-1])),
+            size=(image.shape[1], image.shape[2]),
+            mode="bilinear"
+        )
+        latent_mask = latent_mask.movedim(1, -1).expand((-1, -1, -1, 3))
         image = image.clone()
 
+        # 根据模式设置遮罩区域像素值
         if mask_color == "mask_black":
             masked_pixel = -1.0  
         elif mask_color == "mask_white":
@@ -2565,8 +2577,13 @@ class pack_inpaint: #隐藏
         else:
             masked_pixel = -1.0  # 默认黑色
         
-        image[mask > 0.5] = masked_pixel
+        image[latent_mask > 0.5] = masked_pixel  # 使用 latent_mask 判断
         return (image,)
+
+
+
+
+
 
 
 
@@ -2677,8 +2694,6 @@ class pre_inpaint_sum:
 
 
 
-#endregion--------- inpaint-------------
-
 
 class sum_stack_image:
 
@@ -2785,6 +2800,8 @@ class sum_stack_image:
 
 
 
+
+#endregion--------- inpaint-------------
 
 
 
