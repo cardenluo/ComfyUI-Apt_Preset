@@ -1147,273 +1147,6 @@ class Apply_condiStack:
 
 
 
-class pre_inpaint_sum:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "context": ("RUN_CONTEXT",),
-                "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": None}),
-                "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
-                "latent_image": ("IMAGE", ),  
-                "latent_mask": ("MASK", ),    
-                "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 20.0, "step": 0.1}),
-                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
-            },
-            "optional": {}
-        }
-
-    RETURN_TYPES = ("RUN_CONTEXT","CONDITIONING","CONDITIONING","LATENT",)
-    RETURN_NAMES = ("context","positive", "negative","latent")
-    FUNCTION = "apply_controlnet"
-    CATEGORY = "Apt_Preset/chx_tool/controlnet"
-    DESCRIPTION = """- mask_mode：针对遮罩区图片的预处理方式，mask_black处理成黑色块，mask_white处理成白色块，mask_gray处理成灰色块
-- 模式一：没有选择controlnet，采样内部重绘模式InpaintModelConditioning
-- （1）低噪重绘：适合所有模型，适合低噪重绘，细节修复，微改变
-- （2）高噪重绘：适合图像编辑模型，如qwenEdit,kontext
-- 模式二：选择controlnet，采用CN控制模式，controlnet inpainting的模型
-- SD重绘，用mask_black
-- XL重绘，用mask_white
-- flux重绘，用Alimama
-- qwen_image重绘，用Alimama"""
-
-    def apply_controlnet(self, context, control_net, latent_image, strength, smoothness, start_percent, end_percent, mask_mode="mask_black", latent_mask=None):
-        vae = context.get("vae", None)
-        positive = context.get("positive", None)
-        negative = context.get("negative", None)
-        latent = encode(vae, latent_image)[0]
-        latent_mask = smoothness_mask(latent_mask, smoothness)
-
-        if control_net == "None":
-            positive, negative, latent = InpaintModelConditioning().encode(positive, negative, latent_image, vae, latent_mask, True)
-            context = new_context(context, positive=positive, negative=negative, latent=latent)
-            return (context, positive, negative, latent)
-
-        control_net = ControlNetLoader().load_controlnet(control_net)[0]
-        latent = set_mask(latent, latent_mask)
-
-        if mask_mode != "Ailmama":
-            processed_image = self.InpaintPreprocessor(latent_image, latent_mask, mask_mode)[0]
-        else:
-            processed_image = latent_image
-
-        extra_concat = []
-        if control_net.concat_mask:
-            latent_mask = 1.0 - latent_mask.reshape((-1, 1, latent_mask.shape[-2], latent_mask.shape[-1]))
-            mask_apply = comfy.utils.common_upscale(latent_mask, processed_image.shape[2], processed_image.shape[1], "bilinear", "center").round()
-            processed_image = processed_image * mask_apply.movedim(1, -1).repeat(1, 1, 1, processed_image.shape[3])
-            extra_concat = [latent_mask]
-
-        if strength == 0:
-            return (context, positive, negative, latent)
-
-        control_hint = processed_image.movedim(-1,1)
-        cnets = {}
-
-        out = []
-        for conditioning in [positive, negative]:
-            c = []
-            for t in conditioning:
-                d = t[1].copy()
-
-                prev_cnet = d.get('control', None)
-                if prev_cnet in cnets:
-                    c_net = cnets[prev_cnet]
-                else:
-                    c_net = control_net.copy().set_cond_hint(control_hint, strength, (start_percent, end_percent), vae=vae, extra_concat=extra_concat)
-                    c_net.set_previous_controlnet(prev_cnet)
-                    cnets[prev_cnet] = c_net
-
-                d['control'] = c_net
-                d['control_apply_to_uncond'] = False
-                n = [t[0], d]
-                c.append(n)
-            out.append(c)
-
-        context = new_context(context, positive=out[0], negative=out[1], latent=latent)
-        return (context, out[0], out[1], latent)
-
-    def InpaintPreprocessor(self, image, mask, mask_color="mask_black"):
-        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(image.shape[1], image.shape[2]), mode="bilinear")
-        mask = mask.movedim(1, -1).expand((-1, -1, -1, 3))
-        image = image.clone()
-
-        if mask_color == "mask_black":
-            masked_pixel = -1.0  
-        elif mask_color == "mask_white":
-            masked_pixel = 1.0  
-        elif mask_color == "mask_gray":
-            masked_pixel = 0.0  
-        else:
-            masked_pixel = -1.0  
-        
-        image[mask > 0.5] = masked_pixel
-        return (image,)
-
-
-
-
-
-
-class pack_inpaint: #隐藏
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "vae": ("VAE",),
-                "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
-
-                "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": None}),
-                "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
-                "image": ("IMAGE", ),  
-                "mask": ("MASK", ),    
-                "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
-            },
-            "optional": {
-                        
-            }
-        }
-
-    RETURN_TYPES = ("CONDITIONING","CONDITIONING","LATENT",)
-    RETURN_NAMES = ("positive", "negative","latent")
-    FUNCTION = "apply_controlnet"
-    CATEGORY = "Apt_Preset/chx_tool/controlnet"
-
-
-    def apply_controlnet(self, vae, positive, negative, control_net, image, strength, smoothness, start_percent, end_percent, mask_mode="mask_black", mask=None):
-
-        mask =smoothness_mask(mask, smoothness)
-
-        latent = None
-
-        if control_net == "None":
-            positive, negative, latent = InpaintModelConditioning().encode(positive, negative, image, vae, mask, True)
-
-            return ( positive, negative, latent)
-
-
-        encoded_result = encode(vae, image)
-        if encoded_result:
-            latent = encoded_result[0]
-
-        control_net = ControlNetLoader().load_controlnet(control_net)[0]
-        if latent is not None:
-           latent = set_mask(latent, mask)
-
-        # 处理预处理
-        if mask_mode != "Ailmama":
-            processed_image = self.InpaintPreprocessor(image, mask, mask_mode)[0]
-        else:
-            processed_image = image
-
-        extra_concat = []
-        if control_net.concat_mask:
-            mask = 1.0 - mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
-            mask_apply = comfy.utils.common_upscale(mask, processed_image.shape[2], processed_image.shape[1], "bilinear", "center").round()
-            processed_image = processed_image * mask_apply.movedim(1, -1).repeat(1, 1, 1, processed_image.shape[3])
-            extra_concat = [mask]
-
-        if strength == 0:
-            return ( positive, negative, latent)
-
-        control_hint = processed_image.movedim(-1,1)
-        cnets = {}
-
-        out = []
-        for conditioning in [positive, negative]:
-            c = []
-            for t in conditioning:
-                d = t[1].copy()
-
-                prev_cnet = d.get('control', None)
-                if prev_cnet in cnets:
-                    c_net = cnets[prev_cnet]
-                else:
-                    c_net = control_net.copy().set_cond_hint(control_hint, strength, (start_percent, end_percent), vae=vae, extra_concat=extra_concat)
-                    c_net.set_previous_controlnet(prev_cnet)
-                    cnets[prev_cnet] = c_net
-
-                d['control'] = c_net
-                d['control_apply_to_uncond'] = False
-                n = [t[0], d]
-                c.append(n)
-            out.append(c)
-            
-        if latent is None:
-            latent = {"samples": torch.zeros([1, 4, 512 // 8, 512 // 8])}
-
-        return (out[0], out[1], latent)
-
-    def InpaintPreprocessor(self, image, mask, mask_color="mask_black"):
-        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(image.shape[1], image.shape[2]), mode="bilinear")
-        mask = mask.movedim(1, -1).expand((-1, -1, -1, 3))
-        image = image.clone()
-
-        if mask_color == "mask_black":
-            masked_pixel = -1.0  
-        elif mask_color == "mask_white":
-            masked_pixel = 1.0  
-        elif mask_color == "mask_gray":
-            masked_pixel = 0.0  
-        else:
-            masked_pixel = -1.0  # 默认黑色
-        
-        image[mask > 0.5] = masked_pixel
-        return (image,)
-
-
-
-
-class Stack_inpaint:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-
-            },
-            "optional": {
-                "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": None}),
-                "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
-                "latent_image": ("IMAGE", ),  
-                "latent_mask": ("MASK", ),    
-                "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
-            }
-        }
-
-    RETURN_TYPES = ("INPAINT_STACK",)
-    RETURN_NAMES = ("inpaint",)
-    FUNCTION = "pack_inpaint_params"
-    CATEGORY = "Apt_Preset/stack/😺backup"
-    DESCRIPTION = """
-    - mask_mode：针对遮罩区图片的预处理方式，mask_black处理成黑色块，mask_white处理成白色块，mask_gray处理成灰色块
-
-    - 模式一：没有选择controlnet，采样内部重绘模式InpaintModelConditioning
-    - （1）低噪重绘：适合所有模型，适合低噪重绘，细节修复，微改变
-    - （2）高噪重绘：适合图像编辑模型，如qwenEdit,kontext
-
-    - 模式二：选择controlnet，采用CN控制模式，controlnet inpainting的模型
-    - SD重绘，用mask_black
-    - XL重绘，用mask_white
-    - flux重绘，用Alimama
-    - qwen_image重绘，用Alimama
-    """
-
-
-    def pack_inpaint_params(self, control_net, mask_mode="Ailmama", latent_image=None, latent_mask=None, smoothness=0.0, strength=1.0, start_percent=0.0, end_percent=1.0):
-        inpaint_sum_pack = ( control_net, mask_mode, latent_image, latent_mask,smoothness, strength, start_percent, end_percent)
-        return (inpaint_sum_pack,)
-
-
-
 
 class Stack_ControlNet:
 
@@ -2327,109 +2060,6 @@ class sum_stack_AD:
 
 
 
-class sum_stack_image:
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "context": ("RUN_CONTEXT",),
-            },
-            "optional": {
-                "model":("MODEL", ),
-                "lora_stack": ("LORASTACK",),
-                "ipa_stack": ("IPA_STACK",),
-                "redux_stack": ("REDUX_STACK",),
-                "condi_stack": ("STACK_CONDI", ),
-                "union_stack": ("UNION_STACK",),
-                "cn_stack": ("CN_STACK",),
-                "inpaint": ("INPAINT_STACK",),
-                "latent_stack": ("LATENT_STACK",),
-            },
-            "hidden": {},
-        }
-        
-    RETURN_TYPES = ("RUN_CONTEXT","MODEL", "CONDITIONING","CONDITIONING","LATENT","VAE","CLIP","IMAGE")
-    RETURN_NAMES = ("context", "model","positive","negative","latent","vae","clip","image")
-    FUNCTION = "merge"
-    CATEGORY = "Apt_Preset/chx_tool"
-
-    def merge(self, context=None, model=None, ipa_stack=None, 
-              redux_stack=None, lora_stack=None,condi_stack=None,
-              union_stack=None, cn_stack=None,inpaint=None, latent_stack=None):
-        
-
-        clip = context.get("clip")
-        latent = context.get("latent", None)
-        vae = context.get("vae", None)
-        image = context.get("images", None)
-
-        if model is None:
-            model = context.get("model", None)
-
-        if lora_stack is not None:
-            model, clip = Apply_LoRAStack().apply_lora_stack(model, clip, lora_stack)
-
-        if ipa_stack is not None:
-            model, = Apply_IPA().apply_ipa_stack(model, ipa_stack)
-
-#------------条件防止被重置-----------------------------
-        pos = context.get("pos","a girl")
-        neg = context.get("neg","bad quality")  
-        positive, = CLIPTextEncode().encode(clip, pos)
-        negative, = CLIPTextEncode().encode(clip, neg)
-#-------------------------------------------
-
-        if redux_stack is not None:
-            positive, =  Apply_Redux().apply_redux_stack(positive, redux_stack,)
-
-        if condi_stack is not None:
-            positive, negative = Apply_condiStack().condiStack(clip, condi_stack)
-
-
-
-        if union_stack is not None:
-            positive, negative = Apply_CN_union().apply_union_stack(positive, negative, vae, union_stack, extra_concat=[])
-
-
-        if cn_stack is not None and len(cn_stack) > 0:
-            first_element = cn_stack[0]
-            
-            if len(first_element) == 5:
-                positive, negative = Apply_ControlNetStack().apply_controlnet_stack(
-                    positive=positive, 
-                    negative=negative, 
-                    switch="On", 
-                    vae=vae,
-                    controlnet_stack=cn_stack
-                )
-            elif len(first_element) == 8:
-                positive, = Apply_adv_CN().apply_controlnet(positive, cn_stack)
-            else:
-                print(f"警告: 未知的控制网络堆栈类型，元素长度为 {len(first_element)}")
-
-
-        if inpaint is not None:
-            control_net, mask_mode, image, mask, smoothness, strength, start_percent, end_percent = inpaint
-            positive, negative, latent = pack_inpaint().apply_controlnet(
-                vae, positive, negative, control_net, image, 
-                strength, smoothness, start_percent, end_percent, 
-                mask_mode, mask
-            )
-
-
-        if latent_stack is not None:
-            model, positive, negative, latent = Apply_latent().apply_latent_stack(model, positive, negative, vae, latent_stack)
-
-        context = new_context(context, clip=clip, positive=positive, negative=negative, model=model, latent=latent, vae=vae)
-        return (context, model, positive, negative, latent,vae,clip, image )
-
-
-
-
-
-
-
 #endregion-------stack_pack------------------------------------------------------------------------------#
 
   
@@ -2821,6 +2451,342 @@ class Stack_CN_union3:
 
 
 
+
+
+# inpaint-------------
+
+
+
+class Stack_inpaint:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+
+            },
+            "optional": {
+                "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": "None"}),
+                "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
+                "latent_image": ("IMAGE", ),  
+                "latent_mask": ("MASK", ),    
+                "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
+            }
+        }
+
+    RETURN_TYPES = ("INPAINT_STACK",)
+    RETURN_NAMES = ("inpaint",)
+    FUNCTION = "pack_inpaint_params"
+    CATEGORY = "Apt_Preset/stack/😺backup"
+    DESCRIPTION = """
+    - mask_mode：针对遮罩区图片的预处理方式，mask_black处理成黑色块，mask_white处理成白色块，mask_gray处理成灰色块
+
+    - 模式一：没有选择controlnet，采样内部重绘模式InpaintModelConditioning
+    - （1）低噪重绘：适合所有模型，适合低噪重绘，细节修复，微改变
+    - （2）高噪重绘：适合图像编辑模型，如qwenEdit,kontext
+
+    - 模式二：选择controlnet，采用CN控制模式，controlnet inpainting的模型
+    - SD重绘，用mask_black
+    - XL重绘，用mask_white
+    - flux重绘，用Alimama
+    - qwen_image重绘，用Alimama
+    """
+
+
+    def pack_inpaint_params(self, control_net, mask_mode="Ailmama", latent_image=None, latent_mask=None, smoothness=0.0, strength=1.0, start_percent=0.0, end_percent=1.0):
+        inpaint_sum_pack = ( control_net, mask_mode, latent_image, latent_mask,smoothness, strength, start_percent, end_percent)
+        return (inpaint_sum_pack,)
+
+
+
+
+
+class pack_inpaint: #隐藏
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "vae": ("VAE",),
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
+
+                "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": "None"}),
+                "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
+                "image": ("IMAGE", ),  
+                "mask": ("MASK", ),    
+                "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
+            },
+            "optional": {
+                        
+            }
+        }
+
+    RETURN_TYPES = ("CONDITIONING","CONDITIONING","LATENT",)
+    RETURN_NAMES = ("positive", "negative","latent")
+    FUNCTION = "apply_controlnet"
+    CATEGORY = "Apt_Preset/chx_tool/controlnet"
+
+
+    def apply_controlnet(self, vae, positive, negative, control_net, image, strength, smoothness, start_percent, end_percent, mask_mode="mask_black", mask=None):
+
+
+        if image is not None :
+           latent = encode(vae, image)[0]
+        if mask is not None and smoothness > 0:
+           mask =smoothness_mask(mask, smoothness)
+           latent = set_mask(latent, mask)
+
+#---------------------------------------------------没有cn就是inpaint--------------------------------------------#
+        if control_net == "None":
+            positive, negative, latent = InpaintModelConditioning().encode(positive, negative, image, vae, mask, True)
+            return ( positive, negative, latent)
+
+#---------------------------------------------------有cn分两情况,参考图处理--------------------------------------------#
+        else:
+            control_net = ControlNetLoader().load_controlnet(control_net)[0]
+            if mask_mode == "Ailmama":
+                out= InpaintingAliMamaApply().apply_inpaint_controlnet(positive, negative, control_net, vae, image, mask, strength, start_percent, end_percent)
+
+            else: 
+                processed_image = self.InpaintPreprocessor(image, mask, mask_mode)[0]
+
+                out= ControlNetApplyAdvanced().apply_controlnet(positive, negative, control_net, processed_image, strength, 
+                                                                start_percent, end_percent, vae=None, extra_concat=[])
+
+    
+            return (out[0], out[1], latent)
+
+
+    def InpaintPreprocessor(self, image, mask, mask_color="mask_black"):
+        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(image.shape[1], image.shape[2]), mode="bilinear")
+        mask = mask.movedim(1, -1).expand((-1, -1, -1, 3))
+        image = image.clone()
+
+        if mask_color == "mask_black":
+            masked_pixel = -1.0  
+        elif mask_color == "mask_white":
+            masked_pixel = 1.0  
+        elif mask_color == "mask_gray":
+            masked_pixel = 0.0  
+        else:
+            masked_pixel = -1.0  # 默认黑色
+        
+        image[mask > 0.5] = masked_pixel
+        return (image,)
+
+
+
+class InpaintingAliMamaApply():
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"positive": ("CONDITIONING", ),
+                             "negative": ("CONDITIONING", ),
+                             "control_net": ("CONTROL_NET", ),
+                             "vae": ("VAE", ),
+                             "image": ("IMAGE", ),
+                             "mask": ("MASK", ),
+                             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                             "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                             "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
+                             }}
+
+    FUNCTION = "apply_inpaint_controlnet"
+    CATEGORY = "conditioning/controlnet"
+
+    def apply_inpaint_controlnet(self, positive, negative, control_net, vae, image, mask, strength, start_percent, end_percent):
+        extra_concat = []
+        if control_net.concat_mask:
+            mask = 1.0 - mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
+            mask_apply = comfy.utils.common_upscale(mask, image.shape[2], image.shape[1], "bilinear", "center").round()
+            image = image * mask_apply.movedim(1, -1).repeat(1, 1, 1, image.shape[3])
+            extra_concat = [mask]
+
+        out= self.apply_controlnet(positive, negative, control_net, image, strength, start_percent, end_percent, vae=vae, extra_concat=extra_concat)
+        
+        return  (out[0], out[1])
+
+    def apply_controlnet(self, positive, negative, control_net, image, strength, start_percent, end_percent, vae=None, extra_concat=[]):
+        if strength == 0:
+            return (positive, negative)
+
+        control_hint = image.movedim(-1,1)
+        cnets = {}
+
+        out = []
+        for conditioning in [positive, negative]:
+            c = []
+            for t in conditioning:
+                d = t[1].copy()
+
+                prev_cnet = d.get('control', None)
+                if prev_cnet in cnets:
+                    c_net = cnets[prev_cnet]
+                else:
+                    c_net = control_net.copy().set_cond_hint(control_hint, strength, (start_percent, end_percent), vae=vae, extra_concat=extra_concat)
+                    c_net.set_previous_controlnet(prev_cnet)
+                    cnets[prev_cnet] = c_net
+
+                d['control'] = c_net
+                d['control_apply_to_uncond'] = False
+                n = [t[0], d]
+                c.append(n)
+            out.append(c)
+        return (out[0], out[1])
+
+
+
+class pre_inpaint_sum:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "context": ("RUN_CONTEXT",),
+                "control_net": (["None"] + folder_paths.get_filename_list("controlnet"), {"default": "None"}),
+                "mask_mode": (["Ailmama", "mask_black", "mask_white", "mask_gray"], {"default": "Ailmama"}),
+                "latent_image": ("IMAGE", ),  
+                "latent_mask": ("MASK", ),    
+                "smoothness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 20.0, "step": 0.1}),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
+            },
+            "optional": {}
+        }
+
+    RETURN_TYPES = ("RUN_CONTEXT","CONDITIONING","CONDITIONING","LATENT",)
+    RETURN_NAMES = ("context","positive", "negative","latent")
+    FUNCTION = "apply_controlnet"
+    CATEGORY = "Apt_Preset/chx_tool/controlnet"
+    DESCRIPTION = """- mask_mode：针对遮罩区图片的预处理方式，mask_black处理成黑色块，mask_white处理成白色块，mask_gray处理成灰色块
+- 模式一：没有选择controlnet，采样内部重绘模式InpaintModelConditioning
+- （1）低噪重绘：适合所有模型，适合低噪重绘，细节修复，微改变
+- （2）高噪重绘：适合图像编辑模型，如qwenEdit,kontext
+- 模式二：选择controlnet，采用CN控制模式，controlnet inpainting的模型
+- SD重绘，用mask_black
+- XL重绘，用mask_white
+- flux重绘，用Alimama
+- qwen_image重绘，用Alimama"""
+
+    def apply_controlnet(self, context, control_net, latent_image, strength, smoothness, start_percent, end_percent, mask_mode="mask_black", latent_mask=None):
+        vae = context.get("vae", None)
+        positive = context.get("positive", None)
+        negative = context.get("negative", None)
+          
+        out = pack_inpaint().apply_controlnet(
+            vae, positive, negative, control_net, latent_image, strength,
+            smoothness, start_percent, end_percent, mask_mode, latent_mask
+        )
+
+        latent = out[2]
+        context = new_context(context, positive=out[0], negative=out[1], latent=latent)
+        return (context, out[0], out[1], out[2])
+
+
+
+
+class sum_stack_image:
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "context": ("RUN_CONTEXT",),
+            },
+            "optional": {
+                "model":("MODEL", ),
+                "lora_stack": ("LORASTACK",),
+                "ipa_stack": ("IPA_STACK",),
+                "redux_stack": ("REDUX_STACK",),
+                "condi_stack": ("STACK_CONDI", ),
+                "union_stack": ("UNION_STACK",),
+                "cn_stack": ("CN_STACK",),
+                "inpaint": ("INPAINT_STACK",),
+                "latent_stack": ("LATENT_STACK",),
+            },
+            "hidden": {},
+        }
+        
+    RETURN_TYPES = ("RUN_CONTEXT","MODEL", "CONDITIONING","CONDITIONING","LATENT","VAE","CLIP","IMAGE")
+    RETURN_NAMES = ("context", "model","positive","negative","latent","vae","clip","image")
+    FUNCTION = "merge"
+    CATEGORY = "Apt_Preset/chx_tool"
+
+    def merge(self, context=None, model=None, ipa_stack=None, 
+              redux_stack=None, lora_stack=None,condi_stack=None,
+              union_stack=None, cn_stack=None,inpaint=None, latent_stack=None):
+        
+
+        clip = context.get("clip")
+        latent = context.get("latent", None)
+        vae = context.get("vae", None)
+        image = context.get("images", None)
+
+        if model is None:
+            model = context.get("model", None)
+
+        if lora_stack is not None:
+            model, clip = Apply_LoRAStack().apply_lora_stack(model, clip, lora_stack)
+
+        if ipa_stack is not None:
+            model, = Apply_IPA().apply_ipa_stack(model, ipa_stack)
+
+#------------条件防止被重置-----------------------------
+        pos = context.get("pos","a girl")
+        neg = context.get("neg","bad quality")  
+        positive, = CLIPTextEncode().encode(clip, pos)
+        negative, = CLIPTextEncode().encode(clip, neg)
+#-------------------------------------------
+
+        if redux_stack is not None:
+            positive, =  Apply_Redux().apply_redux_stack(positive, redux_stack,)
+
+        if condi_stack is not None:
+            positive, negative = Apply_condiStack().condiStack(clip, condi_stack)
+
+
+
+        if union_stack is not None:
+            positive, negative = Apply_CN_union().apply_union_stack(positive, negative, vae, union_stack, extra_concat=[])
+
+
+        if cn_stack is not None and len(cn_stack) > 0:
+            first_element = cn_stack[0]
+            
+            if len(first_element) == 5:
+                positive, negative = Apply_ControlNetStack().apply_controlnet_stack(
+                    positive=positive, 
+                    negative=negative, 
+                    switch="On", 
+                    vae=vae,
+                    controlnet_stack=cn_stack
+                )
+            elif len(first_element) == 8:
+                positive, = Apply_adv_CN().apply_controlnet(positive, cn_stack)
+            else:
+                print(f"警告: 未知的控制网络堆栈类型，元素长度为 {len(first_element)}")
+
+
+        if inpaint is not None:
+            control_net, mask_mode, latent_image, latent_mask,smoothness, strength, start_percent, end_percent = inpaint
+
+            positive, negative, latent = pack_inpaint().apply_controlnet(
+                vae, positive, negative, control_net, latent_image, 
+                strength, smoothness, start_percent, end_percent, 
+                mask_mode, latent_mask
+            )
+
+
+
+        if latent_stack is not None:
+            model, positive, negative, latent = Apply_latent().apply_latent_stack(model, positive, negative, vae, latent_stack)
+
+        context = new_context(context, clip=clip, positive=positive, negative=negative, model=model, latent=latent, vae=vae)
+        return (context, model, positive, negative, latent,vae,clip, image )
 
 
 
