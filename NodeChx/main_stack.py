@@ -2446,15 +2446,7 @@ class Stack_CN_union3:
 
 
 
-
-
-
-
-
-
-
-# inpaint-------------
-
+#region--------- inpaint-------------
 
 
 class Stack_inpaint:
@@ -2498,9 +2490,6 @@ class Stack_inpaint:
     def pack_inpaint_params(self, control_net, mask_mode="Ailmama", latent_image=None, latent_mask=None, smoothness=0.0, strength=1.0, start_percent=0.0, end_percent=1.0):
         inpaint_sum_pack = ( control_net, mask_mode, latent_image, latent_mask,smoothness, strength, start_percent, end_percent)
         return (inpaint_sum_pack,)
-
-
-
 
 
 class pack_inpaint: #隐藏
@@ -2688,6 +2677,8 @@ class pre_inpaint_sum:
 
 
 
+#endregion--------- inpaint-------------
+
 
 class sum_stack_image:
 
@@ -2787,6 +2778,13 @@ class sum_stack_image:
 
         context = new_context(context, clip=clip, positive=positive, negative=negative, model=model, latent=latent, vae=vae)
         return (context, model, positive, negative, latent,vae,clip, image )
+
+
+
+
+
+
+
 
 
 
