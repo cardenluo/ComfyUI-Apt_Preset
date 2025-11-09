@@ -33,6 +33,10 @@ from comfy.utils import ProgressBar
 from comfy.utils import common_upscale
 import node_helpers
 from enum import Enum
+
+
+
+
 #---------------------安全导入------
 try:
     import cv2
@@ -1513,25 +1517,63 @@ def set_mask(samples, mask):                   # 设置latent的mask
 
 
 
-
-def smoothness_mask(mask, smoothness):
-    # 处理不同输入类型，转换为PIL Image
+def smoothness_mask(mask, smoothness=5):
     if isinstance(mask, torch.Tensor):
-        mask_pil = tensor2pil(mask)  # 假设已有此转换函数
+        input_shape = mask.shape
+        input_device = mask.device
+        mask_np = mask.squeeze().cpu().detach().numpy()
     elif isinstance(mask, np.ndarray):
-        if mask.ndim == 2:
-            mask_pil = Image.fromarray((mask * 255).astype(np.uint8), mode='L')
-        elif mask.ndim == 3 and mask.shape[2] in [1, 3, 4]:
-            mask_pil = Image.fromarray((mask * 255).astype(np.uint8))
-        else:
-            mask_pil = Image.fromarray((mask * 255).astype(np.uint8), mode='L')
+        input_shape = mask.shape
+        input_device = torch.device("cpu")
+        mask_np = mask.squeeze()
     elif isinstance(mask, Image.Image):
-        mask_pil = mask
+        input_shape = (1,) + mask.size[::-1]
+        input_device = torch.device("cpu")
+        mask_np = np.array(mask).squeeze()
     else:
-        raise TypeError(f"不支持的输入类型: {type(mask)}")   
+        raise TypeError(f"不支持的输入类型: {type(mask)}，仅支持 torch.Tensor、np.ndarray、PIL.Image")
+    
+    if mask_np.ndim == 3 and mask_np.shape[-1] in [3, 4]:
+        mask_np = cv2.cvtColor(mask_np, cv2.COLOR_RGB2GRAY) if mask_np.shape[-1] == 3 else cv2.cvtColor(mask_np, cv2.COLOR_RGBA2GRAY)
+    
+    mask_np = mask_np / 255.0 if mask_np.max() > 1 else mask_np
+    mask_np = np.clip(mask_np, 0, 1)
+    H, W = mask_np.shape
 
-    feathered_mask = mask_pil.filter(ImageFilter.GaussianBlur(smoothness))
-    return pil2tensor(feathered_mask)
+    mask_binary = (mask_np > 0.5).astype(np.uint8)
+    edges = cv2.Canny(mask_binary * 255, threshold1=100, threshold2=200)
+    edges = (edges > 0).astype(np.uint8)
+    
+    if edges.sum() == 0:
+        result = torch.tensor(mask_np[None, ...]).float().to(input_device)
+        return result.reshape(input_shape) if isinstance(mask, torch.Tensor) else result
+
+    distance = cv2.distanceTransform(1 - edges, distanceType=cv2.DIST_L2, maskSize=5)
+    distance = distance / smoothness
+    weight = np.clip(distance, 0, 1)[None, ...]
+
+    mask_pil = Image.fromarray((mask_np * 255).astype(np.uint8), mode='L')
+    blurred_np = np.array(mask_pil.filter(ImageFilter.GaussianBlur(smoothness))) / 255.0
+    blurred_np = blurred_np[None, ...]
+
+    feathered_np = blurred_np * (1 - weight) + mask_np[None, ...] * weight
+    feathered_np = np.clip(feathered_np, 0, 1)
+
+    result_tensor = torch.tensor(feathered_np).float().to(input_device)
+    if isinstance(mask, torch.Tensor):
+        if mask.ndim == 3 and mask.shape[0] > 1:
+            result_tensor = result_tensor.repeat(mask.shape[0], 1, 1)
+        result_tensor = result_tensor.reshape(input_shape)
+    
+    return result_tensor
+
+
+
+
+
+
+
+
 
 
 def blur_and_expand_mask(mask_img, mask_blur, mask_expansion):   #图片遮罩膨胀、模糊处理---------------------
