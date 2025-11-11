@@ -16,7 +16,7 @@ from typing import cast
 from PIL import Image, ImageDraw,  ImageFilter, ImageEnhance, ImageDraw, ImageFont, ImageOps
 
 from tqdm import tqdm
-import onnxruntime as ort
+
 from enum import Enum
 import random
 import folder_paths
@@ -65,6 +65,13 @@ try:
     REMOVER_AVAILABLE = True  # 导入成功时设置为True
 except ImportError:
     CubicSpline = None
+    REMOVER_AVAILABLE = False  # 导入失败时设置为False
+
+try:
+    import onnxruntime as ort
+    REMOVER_AVAILABLE = True  # 导入成功时设置为True
+except ImportError:
+    ort = None
     REMOVER_AVAILABLE = False  # 导入失败时设置为False
 
 
@@ -6681,6 +6688,7 @@ class chx_Ksampler_inpaint:
             context = new_context(context, latent=latent, images=output_image)
 
             return (context, output_image, cropped_mask_tensor, cropped_image_tensor)
+
 
 
 
