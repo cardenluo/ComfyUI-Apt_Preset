@@ -19,6 +19,9 @@ The current workflow connections are becoming increasingly dense, making them di
 2025.11.2 Add, input_text, output_text, support reading and storing text in multiple formats
           add sum_ksample Includes the switching of multiple sampling methods
 
+2025.11.13  Add qwenV3_L APi support Multi-image analysis
+
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
