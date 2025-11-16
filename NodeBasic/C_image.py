@@ -3900,141 +3900,6 @@ class Image_Resize_sum:
 
 
 
-class Image_Resize_sum_restore:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "resized_image": ("IMAGE",),
-                #"mask": ("MASK",),
-                "stitch": ("STITCH3",),
-                "upscale_method":  (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"], {"default": "bilinear" }),
-            },
-        }
-
-    CATEGORY = "Apt_Preset/image"
-    # 添加原始图像到返回类型
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
-    RETURN_NAMES = ("restored_image", "restored_mask", "original_image")
-    FUNCTION = "restore"
-
-    def restore(self, resized_image, stitch, upscale_method="bicubic"):
-        # 从stitch中提取关键信息
-        original_h, original_w = stitch["original_shape"]
-        pad_left, pad_right, pad_top, pad_bottom = stitch["pad_info"]
-        keep_proportion = stitch["keep_proportion"]
-        final_width, final_height = stitch["final_size"]  # 缩放后有效区域原始尺寸
-        original_mask = stitch.get("original_mask")
-        has_input_mask = stitch.get("has_input_mask", False)
-        crop_x, crop_y = stitch["crop_position"]
-        crop_w, crop_h = stitch["crop_size"]
-        
-        # 获取原始图像
-        original_image = stitch.get("original_image", None)
-        
-        # 获取当前resized_image的实际尺寸
-        current_b, current_h, current_w, current_c = resized_image.shape
-
-        if keep_proportion.startswith("pad"):
-            # 计算原始有效区域在填充后图像中的占比（用于处理比例变化）
-            original_padded_w = final_width + pad_left + pad_right
-            original_padded_h = final_height + pad_top + pad_bottom
-            
-            # 计算当前图像中有效区域的实际位置和尺寸（考虑比例变化）
-            # 1. 计算缩放比例：当前图像 / 原始填充后尺寸
-            scale_w = current_w / original_padded_w if original_padded_w != 0 else 1.0
-            scale_h = current_h / original_padded_h if original_padded_h != 0 else 1.0
-            
-            # 2. 计算有效区域在当前图像中的位置（按比例映射）
-            current_pad_left = int(round(pad_left * scale_w))
-            current_pad_top = int(round(pad_top * scale_h))
-            current_valid_w = int(round(final_width * scale_w))
-            current_valid_h = int(round(final_height * scale_h))
-            
-            # 3. 安全裁剪：确保不超出当前图像范围
-            valid_left = max(0, current_pad_left)
-            valid_right = min(current_w, current_pad_left + current_valid_w)
-            valid_top = max(0, current_pad_top)
-            valid_bottom = min(current_h, current_pad_top + current_valid_h)
-            
-            # 4. 裁剪有效区域
-            valid_image = resized_image[:, valid_top:valid_bottom, valid_left:valid_right, :]
-            
-            # 5. 单次缩放至原始尺寸（关键优化：只缩放一次）
-            restored_image = common_upscale(
-                valid_image.movedim(-1, 1),
-                original_w, original_h,
-                upscale_method,
-                crop="disabled"
-            ).movedim(1, -1)
-
-        elif keep_proportion == "crop":
-            # 处理crop模式的比例适配
-            original_cropped_ratio = crop_w / crop_h if crop_h != 0 else 1.0
-            current_ratio = current_w / current_h if current_h != 0 else 1.0
-            
-            # 计算需要裁剪的区域（保持原始裁剪比例）
-            if abs(current_ratio - original_cropped_ratio) > 1e-6:
-                if current_ratio > original_cropped_ratio:
-                    # 当前图像更宽，按高度裁剪宽度
-                    target_w = int(round(current_h * original_cropped_ratio))
-                    crop_left = (current_w - target_w) // 2
-                    crop_right = current_w - target_w - crop_left
-                    valid_image = resized_image[:, :, crop_left:current_w - crop_right, :]
-                else:
-                    # 当前图像更高，按宽度裁剪高度
-                    target_h = int(round(current_w / original_cropped_ratio))
-                    crop_top = (current_h - target_h) // 2
-                    crop_bottom = current_h - target_h - crop_top
-                    valid_image = resized_image[:, crop_top:current_h - crop_bottom, :, :]
-            else:
-                valid_image = resized_image
-            
-            # 缩放至原始裁剪区域尺寸
-            crop_restored = common_upscale(
-                valid_image.movedim(-1, 1),
-                crop_w, crop_h,
-                upscale_method,
-                crop="disabled"
-            ).movedim(1, -1)
-            
-            # 放回原始图像位置
-            if stitch.get("original_image") is not None:
-                restored_image = stitch["original_image"].clone()
-            else:
-                restored_image = torch.zeros(
-                    (current_b, original_h, original_w, current_c),
-                    dtype=resized_image.dtype,
-                    device=resized_image.device
-                )
-            restored_image[:, crop_y:crop_y + crop_h, crop_x:crop_x + crop_w, :] = crop_restored
-
-        else:  # resize/stretch模式
-            # 直接按原始尺寸比例缩放
-            restored_image = common_upscale(
-                resized_image.movedim(-1, 1),
-                original_w, original_h,
-                upscale_method,
-                crop="disabled"
-            ).movedim(1, -1)
-
-        # 处理mask
-        restored_mask = original_mask if (original_mask is not None and has_input_mask) else (
-            torch.zeros((current_b, original_h, original_w), dtype=torch.float32, device=resized_image.device)
-        )
-       
-        restored_image = convert_pil_image(restored_image)
-        
-        # 如果原始图像存在则返回，否则返回一个默认图像
-        if original_image is not None:
-            output_original_image = original_image
-        else:
-            output_original_image = torch.zeros((1, original_h, original_w, 3), dtype=torch.float32)
-
-        return (restored_image.cpu(), restored_mask.cpu(), output_original_image.cpu())
-
-
-
 
 #endregion----------------------------合并----------
 
@@ -4042,8 +3907,6 @@ class Image_Resize_sum_restore:
 
 
 #region--------------------裁切组合------------
-
-
 
 class Image_transform_crop:
     @classmethod
@@ -4427,6 +4290,27 @@ class Image_Solo_data:
         )
 
 
+def create_mask_feather(mask, smoothness):
+    if smoothness <= 0:
+        return mask.clone() if isinstance(mask, torch.Tensor) else torch.tensor(mask).float()
+    
+    if isinstance(mask, torch.Tensor):
+        mask_np = mask.squeeze().cpu().detach().numpy()
+        device = mask.device
+    else:
+        mask_np = mask.squeeze()
+        device = torch.device("cpu")
+    
+    mask_np = (mask_np > 0.5).astype(np.uint8)
+    dist = cv2.distanceTransform(mask_np, distanceType=cv2.DIST_L2, maskSize=5)
+    dist = np.clip(dist, 0, smoothness)
+    feather_mask = dist / smoothness
+    
+    feather_mask = torch.tensor(feather_mask).float().unsqueeze(0).to(device)
+    if isinstance(mask, torch.Tensor) and mask.ndim == 3:
+        feather_mask = feather_mask.repeat(mask.shape[0], 1, 1)
+    
+    return feather_mask
 
 
 class Image_solo_stitch:
@@ -4437,7 +4321,7 @@ class Image_solo_stitch:
                 "inpainted_image": ("IMAGE",),
                 "mask": ("MASK",),
                 "stitch": ("STITCH2",),
-                "smoothness": ("INT", {"default": 0, "min": 0, "max": 150, "step": 1, "display": "slider"}),
+                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "display": "slider"}),
                 "blend_factor": ("FLOAT", {"default": 1.0,"min": 0.0,"max": 1.0,"step": 0.01}),
                 "blend_mode": (["normal", "multiply", "screen", "overlay", "soft_light", "difference"],),
                 "opacity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -4450,7 +4334,6 @@ class Image_solo_stitch:
     RETURN_TYPES = ("IMAGE","IMAGE","IMAGE") 
     RETURN_NAMES = ("image","recover_image","original_image") 
     FUNCTION = "inpaint_stitch"
-
 
     def apply_smooth_blur(self, image, mask, smoothness, bg_color="Alpha"):
         batch_size = image.shape[0]
@@ -4467,7 +4350,7 @@ class Image_solo_stitch:
             current_image = image[i].clone()
             current_mask = mask[i] if i < mask.shape[0] else mask[0]
             if smoothness > 0:
-                mask_tensor = smoothness_mask(current_mask, smoothness)
+                mask_tensor = create_mask_feather(current_mask, smoothness)
             else:
                 mask_tensor = current_mask.clone()
             if mask_tensor.dim() == 1:
@@ -4494,7 +4377,6 @@ class Image_solo_stitch:
                     bg_tensor[:, :, 0] = r / 255.0
                     bg_tensor[:, :, 1] = g / 255.0
                     bg_tensor[:, :, 2] = b / 255.0
-                
                 result_tensor = result_tensor * mask_expanded + bg_tensor * (1 - mask_expanded)            
             result_images.append(result_tensor.unsqueeze(0))
             smoothed_masks.append(smoothed_mask.unsqueeze(0))       
@@ -4506,18 +4388,17 @@ class Image_solo_stitch:
         if feather_size <= 0:
             return np.ones((height, width), dtype=np.float32)
         
-        feather = min(feather_size, min(width, height) // 2)
+        feather = min(feather_size, width // 2, height // 2)
         mask = np.ones((height, width), dtype=np.float32)
         
         for y in range(feather):
             mask[y, :] = y / feather
-        for y in range(height - feather, height):
-            mask[y, :] = (height - y) / feather
+            mask[height - 1 - y, :] = y / feather
+        
         for x in range(feather):
             mask[:, x] = np.minimum(mask[:, x], x / feather)
-        for x in range(width - feather, width):
-            mask[:, x] = np.minimum(mask[:, x], (width - x) / feather)
-            
+            mask[:, width - 1 - x] = np.minimum(mask[:, width - 1 - x], x / feather)
+        
         return mask
 
     def inpaint_stitch(self, inpainted_image, smoothness, mask, stitch, blend_factor, blend_mode, opacity, stitch_mode, recover_method):
@@ -4527,19 +4408,14 @@ class Image_solo_stitch:
         mask_crop_x, mask_crop_y, mask_crop_x2, mask_crop_y2 = stitch["mask_cropped_position"]
         original_image_h, original_image_w = stitch["original_image_shape"]
 
-        # 从stitch字典中获取背景图像数据
         if "bj_image" in stitch:
-            # 如果stitch中包含背景图像数据，则使用它
             bj_image = stitch["bj_image"]
         else:
-            # 如果stitch中不包含背景图像，则创建一个黑色背景
             bj_image = torch.zeros((1, original_h, original_w, 3), dtype=torch.float32)
 
-        # 获取原始输入图像
         if "original_image" in stitch:
             original_image = stitch["original_image"]
         else:
-            # 如果stitch中不包含原始图像，则创建一个黑色背景作为默认值
             original_image = torch.zeros((1, original_image_h, original_image_w, 3), dtype=torch.float32)
 
         if opacity < 1.0:
@@ -4553,7 +4429,7 @@ class Image_solo_stitch:
         background_np = (bj_image[0].cpu().numpy() * 255).astype(np.uint8)
 
         inpainted_resized = cv2.resize(inpainted_np, (crop_w, crop_h))
-        mask_resized = cv2.resize(mask_np, (crop_w, crop_h))
+        mask_blurred = cv2.resize(mask_np, (crop_w, crop_h))
         background_resized = cv2.resize(background_np, (original_w, original_h))
 
         result = np.zeros((original_h, original_w, 4), dtype=np.uint8)
@@ -4571,22 +4447,10 @@ class Image_solo_stitch:
             mask_content = mask_blurred[mask_crop_y:mask_crop_y2, mask_crop_x:mask_crop_x2]
             inpaint_content = inpainted_blurred[mask_crop_y:mask_crop_y2, mask_crop_x:mask_crop_x2]
             
-            if mask_content.size == 0 or inpaint_content.size == 0:
-                print("Warning: Mask content is empty, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
-            
             paste_x_start = max(0, crop_x + mask_crop_x)
             paste_x_end = min(original_w, crop_x + mask_crop_x2)
             paste_y_start = max(0, crop_y + mask_crop_y)
             paste_y_end = min(original_h, crop_y + mask_crop_y2)
-            
-            if paste_x_start >= paste_x_end or paste_y_start >= paste_y_end:
-                print("Warning: Invalid paste region, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
             
             alpha = mask_content / 255.0
             expected_h = paste_y_end - paste_y_start
@@ -4595,16 +4459,8 @@ class Image_solo_stitch:
             if alpha.shape[0] != expected_h or alpha.shape[1] != expected_w:
                 alpha = cv2.resize(alpha, (expected_w, expected_h))
             
-            alpha = np.expand_dims(alpha, axis=-1)
-            
+            alpha = np.expand_dims(alpha, axis=-1).repeat(3, axis=-1)
             background_content = result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3]
-            
-            if (background_content.shape[0] != alpha.shape[0] or 
-                background_content.shape[1] != alpha.shape[1]):
-                print("Warning: Dimension mismatch after processing, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
             
             if (inpaint_content.shape[0] < alpha.shape[0] or 
                 inpaint_content.shape[1] < alpha.shape[1]):
@@ -4622,58 +4478,42 @@ class Image_solo_stitch:
             elif len(background_content.shape) == 3 and background_content.shape[2] > 3:
                 background_content = background_content[:, :, :3]
             
-            try:
-                blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
-                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
-                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha * 255).astype(np.uint8).squeeze()
-            except Exception as e:
-                print(f"Warning: Error during blending operation: {e}, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
+            blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
+            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
+            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha[..., 0] * 255).astype(np.uint8)
 
         else:
+            # 核心修改：完全基于裁剪方框的宽高（crop_w/crop_h）生成羽化mask，不依赖任何mask相关尺寸
             feather_mask = self.create_feather_mask(crop_w, crop_h, smoothness)
             
+            # 基于裁剪方框计算贴合位置（纯矩形逻辑，无mask依赖）
             paste_x_start = max(0, crop_x)
             paste_x_end = min(original_w, crop_x + crop_w)
             paste_y_start = max(0, crop_y)
             paste_y_end = min(original_h, crop_y + crop_h)
             
-            inpaint_content = inpainted_resized[
-                max(0, paste_y_start - crop_y) : max(0, paste_y_end - crop_y),
-                max(0, paste_x_start - crop_x) : max(0, paste_x_end - crop_x)
-            ]
+            # 基于裁剪方框计算图像提取范围（纯矩形逻辑）
+            crop_x_start = max(0, paste_x_start - crop_x)
+            crop_x_end = min(crop_w, paste_x_end - crop_x)
+            crop_y_start = max(0, paste_y_start - crop_y)
+            crop_y_end = min(crop_h, paste_y_end - crop_y)
             
-            if inpaint_content.size == 0:
-                print("Warning: Inpaint content is empty in crop_image mode, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
+            # 提取矩形区域的图像内容（无mask裁剪）
+            inpaint_content = inpainted_resized[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
             
-            if paste_x_start >= paste_x_end or paste_y_start >= paste_y_end:
-                print("Warning: Invalid paste region in crop_image mode, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
+            # 提取对应的矩形羽化mask（无mask裁剪）
+            alpha_mask = feather_mask[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
+            alpha = np.expand_dims(alpha_mask, axis=-1).repeat(3, axis=-1)
             
-            alpha_mask = feather_mask[
-                max(0, paste_y_start - crop_y) : max(0, paste_y_end - crop_y),
-                max(0, paste_x_start - crop_x) : max(0, paste_x_end - crop_x)
-            ]
-            alpha = np.expand_dims(alpha_mask, axis=-1)
-            
+            # 提取背景矩形区域
             background_content = result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3]
             
-            if (background_content.shape[0] != alpha.shape[0] or 
-                background_content.shape[1] != alpha.shape[1] or
-                inpaint_content.shape[0] != alpha.shape[0] or
-                inpaint_content.shape[1] != alpha.shape[1]):
-                print("Warning: Dimension mismatch in crop_image mode, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
+            # 强制尺寸对齐（基于背景矩形尺寸，纯矩形匹配）
+            h, w = background_content.shape[:2]
+            inpaint_content = cv2.resize(inpaint_content, (w, h))
+            alpha = cv2.resize(alpha, (w, h))
             
+            # 通道数统一（保持原逻辑）
             if len(inpaint_content.shape) == 3 and inpaint_content.shape[2] > 3:
                 inpaint_content = inpaint_content[:, :, :3]
             elif len(inpaint_content.shape) == 2:
@@ -4684,15 +4524,10 @@ class Image_solo_stitch:
             elif len(background_content.shape) == 3 and background_content.shape[2] > 3:
                 background_content = background_content[:, :, :3]
             
-            try:
-                blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
-                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
-                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha * 255).astype(np.uint8).squeeze()
-            except Exception as e:
-                print(f"Warning: Error during blending operation in crop_image mode: {e}, returning background image")
-                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
-                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-                return (fimage, fimage, original_image)  # 返回三个值
+            # 矩形区域混合（纯矩形羽化效果）
+            blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
+            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
+            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha[..., 0] * 255).astype(np.uint8)
 
         final_rgb = result[:, :, :3]
         final_image_tensor = torch.from_numpy(final_rgb / 255.0).float().unsqueeze(0)
@@ -4715,8 +4550,7 @@ class Image_solo_stitch:
         fimage = convert_pil_image(fimage)
         recover_img = convert_pil_image(recover_img)
 
-        return (fimage, recover_img, original_image)  # 返回三个值
-
+        return (fimage, fimage, original_image)
 
 
 class Image_solo_crop:
@@ -5084,11 +4918,8 @@ class Image_solo_crop:
         return (bj_image, bj_mask_tensor, cropped_image_tensor, cropped_mask_tensor, stitch)
 
 
-
-
-
-
 #endregion----------------裁切组合--------------
+
 
 
 class Mask_simple_adjust:
@@ -5591,7 +5422,7 @@ class Image_pad_adjust_restore:
             "required": {
                 "pad_image": ("IMAGE",),
                 "stitch": ("STITCH4",),
-                "smoothness": ("INT", {"default": 0, "min": 0, "max": 150, "step": 1, "display": "slider"}),
+                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "display": "slider"}),
             },
         }
     
@@ -6082,7 +5913,7 @@ class Image_smooth_blur:
             "required": {
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
-                "smoothness": ("INT", {"default": 0, "min": 0, "max": 150, "step": 1, "display": "slider"}),
+                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "display": "slider"}),
                 "invert_mask": ("BOOLEAN", {"default": False}),
                 "mask_expansion": ("INT", {"default": 0, "min": -50, "max": 50, "step": 1}),
                 "mask_color": (["image", "Alpha", "white", "black", "red", "green", "blue", "gray"], {"default": "white"}),
@@ -6687,6 +6518,237 @@ class chx_Ksampler_inpaint:
             context = new_context(context, latent=latent, images=output_image)
 
             return (context, output_image, cropped_mask_tensor, cropped_image_tensor)
+
+
+
+
+
+
+
+class Image_Resize_sum_restore:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "resized_image": ("IMAGE",),
+                "stitch": ("STITCH3",),
+                "upscale_method":  (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"], {"default": "bilinear" }),
+                "pad_crop_no_scale": ("BOOLEAN", {"default": False, }),
+            },
+        }
+
+    CATEGORY = "Apt_Preset/image"
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("restored_image", "restored_mask", "original_image")
+    FUNCTION = "restore"
+
+    DESCRIPTION = """
+    - 新增参数：
+    - pad_crop_no_scale：布尔值，True时无缩放直接裁切填充部分
+      （计算输入图像与Image_Resize_sum输出图像的尺寸倍数，对填充部分做同倍数裁切）
+    """
+
+    def restore(self, resized_image, stitch, upscale_method="bicubic", pad_crop_no_scale=False):
+        # 从stitch中提取关键信息
+        original_h, original_w = stitch["original_shape"]
+        pad_left, pad_right, pad_top, pad_bottom = stitch["pad_info"]
+        keep_proportion = stitch["keep_proportion"]
+        final_width, final_height = stitch["final_size"]  # Image_Resize_sum输出的有效区域尺寸
+        original_mask = stitch.get("original_mask")
+        has_input_mask = stitch.get("has_input_mask", False)
+        crop_x, crop_y = stitch["crop_position"]
+        crop_w, crop_h = stitch["crop_size"]
+        original_resized_shape = stitch["resized_shape"]  # Image_Resize_sum输出的完整尺寸（含填充）
+        
+        # 获取原始图像
+        original_image = stitch.get("original_image", None)
+        
+        # 获取当前输入图像的尺寸
+        current_b, current_h, current_w, current_c = resized_image.shape
+
+        # 计算尺寸倍数：当前输入图像尺寸 / Image_Resize_sum输出的完整尺寸
+        scale_w = current_w / original_resized_shape[1] if original_resized_shape[1] != 0 else 1.0
+        scale_h = current_h / original_resized_shape[0] if original_resized_shape[0] != 0 else 1.0
+
+        if pad_crop_no_scale:
+            # 无缩放直接裁切模式：按倍数计算实际填充区域并裁切
+            if keep_proportion.startswith("pad"):
+                # 计算当前图像中实际的填充区域（按尺寸倍数缩放）
+                current_pad_left = int(round(pad_left * scale_w))
+                current_pad_right = int(round(pad_right * scale_w))
+                current_pad_top = int(round(pad_top * scale_h))
+                current_pad_bottom = int(round(pad_bottom * scale_h))
+                
+                # 安全裁切：确保裁切范围在当前图像内
+                crop_left = max(0, current_pad_left)
+                crop_right = max(0, current_w - current_pad_right)
+                crop_top = max(0, current_pad_top)
+                crop_bottom = max(0, current_h - current_pad_bottom)
+                
+                # 裁切填充部分，得到有效区域（不缩放）
+                valid_image = resized_image[:, crop_top:crop_bottom, crop_left:crop_right, :]
+                
+                # 直接使用裁切后的有效区域作为还原图像（保持原有尺寸，仅移除填充）
+                restored_image = valid_image
+            elif keep_proportion == "crop":
+                # crop模式下：按原始裁剪比例裁切当前图像（不缩放）
+                original_cropped_ratio = crop_w / crop_h if crop_h != 0 else 1.0
+                current_ratio = current_w / current_h if current_h != 0 else 1.0
+                
+                if abs(current_ratio - original_cropped_ratio) > 1e-6:
+                    if current_ratio > original_cropped_ratio:
+                        # 当前图像更宽，按高度裁切宽度
+                        target_w = int(round(current_h * original_cropped_ratio))
+                        crop_left = (current_w - target_w) // 2
+                        valid_image = resized_image[:, :, crop_left:crop_left+target_w, :]
+                    else:
+                        # 当前图像更高，按宽度裁切高度
+                        target_h = int(round(current_w / original_cropped_ratio))
+                        crop_top = (current_h - target_h) // 2
+                        valid_image = resized_image[:, crop_top:crop_top+target_h, :, :]
+                else:
+                    valid_image = resized_image
+                
+                # 放回原始图像位置（不缩放）
+                if stitch.get("original_image") is not None:
+                    restored_image = stitch["original_image"].clone()
+                else:
+                    restored_image = torch.zeros(
+                        (current_b, original_h, original_w, current_c),
+                        dtype=resized_image.dtype,
+                        device=resized_image.device
+                    )
+                
+                # 调整有效图像尺寸以匹配原始裁剪区域（仅调整尺寸，不缩放内容）
+                valid_image_resized = common_upscale(
+                    valid_image.movedim(-1, 1),
+                    crop_w, crop_h,
+                    "nearest-exact",  # 直接调整尺寸，不插值
+                    crop="disabled"
+                ).movedim(1, -1)
+                
+                restored_image[:, crop_y:crop_y + crop_h, crop_x:crop_x + crop_w, :] = valid_image_resized
+            else:
+                # resize/stretch模式：直接返回当前图像（不缩放）
+                restored_image = resized_image
+        else:
+            # 原有逻辑：带缩放的还原
+            if keep_proportion.startswith("pad"):
+                # 计算原始有效区域在填充后图像中的占比（用于处理比例变化）
+                original_padded_w = final_width + pad_left + pad_right
+                original_padded_h = final_height + pad_top + pad_bottom
+                
+                # 计算当前图像中有效区域的实际位置和尺寸（考虑比例变化）
+                scale_w = current_w / original_padded_w if original_padded_w != 0 else 1.0
+                scale_h = current_h / original_padded_h if original_padded_h != 0 else 1.0
+                
+                current_pad_left = int(round(pad_left * scale_w))
+                current_pad_top = int(round(pad_top * scale_h))
+                current_valid_w = int(round(final_width * scale_w))
+                current_valid_h = int(round(final_height * scale_h))
+                
+                # 安全裁剪
+                valid_left = max(0, current_pad_left)
+                valid_right = min(current_w, current_pad_left + current_valid_w)
+                valid_top = max(0, current_pad_top)
+                valid_bottom = min(current_h, current_pad_top + current_valid_h)
+                
+                valid_image = resized_image[:, valid_top:valid_bottom, valid_left:valid_right, :]
+                
+                # 缩放至原始尺寸
+                restored_image = common_upscale(
+                    valid_image.movedim(-1, 1),
+                    original_w, original_h,
+                    upscale_method,
+                    crop="disabled"
+                ).movedim(1, -1)
+
+            elif keep_proportion == "crop":
+                # 处理crop模式的比例适配
+                original_cropped_ratio = crop_w / crop_h if crop_h != 0 else 1.0
+                current_ratio = current_w / current_h if current_h != 0 else 1.0
+                
+                if abs(current_ratio - original_cropped_ratio) > 1e-6:
+                    if current_ratio > original_cropped_ratio:
+                        target_w = int(round(current_h * original_cropped_ratio))
+                        crop_left = (current_w - target_w) // 2
+                        crop_right = current_w - target_w - crop_left
+                        valid_image = resized_image[:, :, crop_left:current_w - crop_right, :]
+                    else:
+                        target_h = int(round(current_w / original_cropped_ratio))
+                        crop_top = (current_h - target_h) // 2
+                        crop_bottom = current_h - target_h - crop_top
+                        valid_image = resized_image[:, crop_top:current_h - crop_bottom, :, :]
+                else:
+                    valid_image = resized_image
+                
+                # 缩放至原始裁剪区域尺寸
+                crop_restored = common_upscale(
+                    valid_image.movedim(-1, 1),
+                    crop_w, crop_h,
+                    upscale_method,
+                    crop="disabled"
+                ).movedim(1, -1)
+                
+                # 放回原始图像位置
+                if stitch.get("original_image") is not None:
+                    restored_image = stitch["original_image"].clone()
+                else:
+                    restored_image = torch.zeros(
+                        (current_b, original_h, original_w, current_c),
+                        dtype=resized_image.dtype,
+                        device=resized_image.device
+                    )
+                restored_image[:, crop_y:crop_y + crop_h, crop_x:crop_x + crop_w, :] = crop_restored
+
+            else:  # resize/stretch模式
+                # 直接按原始尺寸比例缩放
+                restored_image = common_upscale(
+                    resized_image.movedim(-1, 1),
+                    original_w, original_h,
+                    upscale_method,
+                    crop="disabled"
+                ).movedim(1, -1)
+
+        # 处理mask（无缩放模式下同步裁切mask）
+        if pad_crop_no_scale and original_mask is not None and has_input_mask:
+            # 对原始mask按相同倍数裁切填充区域
+            mask_h, mask_w = original_mask.shape[1], original_mask.shape[2]
+            mask_scale_w = mask_w / original_resized_shape[1] if original_resized_shape[1] != 0 else 1.0
+            mask_scale_h = mask_h / original_resized_shape[0] if original_resized_shape[0] != 0 else 1.0
+            
+            mask_pad_left = int(round(pad_left * mask_scale_w))
+            mask_pad_right = int(round(pad_right * mask_scale_w))
+            mask_pad_top = int(round(pad_top * mask_scale_h))
+            mask_pad_bottom = int(round(pad_bottom * mask_scale_h))
+            
+            mask_crop_left = max(0, mask_pad_left)
+            mask_crop_right = max(0, mask_w - mask_pad_right)
+            mask_crop_top = max(0, mask_pad_top)
+            mask_crop_bottom = max(0, mask_h - mask_pad_bottom)
+            
+            restored_mask = original_mask[:, mask_crop_top:mask_crop_bottom, mask_crop_left:mask_crop_right]
+        else:
+            restored_mask = original_mask if (original_mask is not None and has_input_mask) else (
+                torch.zeros((current_b, original_h, original_w), dtype=torch.float32, device=resized_image.device)
+            )
+       
+        # 确保输出为PIL图像（保持原有逻辑）
+        if isinstance(restored_image, torch.Tensor):
+            restored_image = convert_pil_image(restored_image)
+        
+        # 处理原始图像输出
+        if original_image is not None:
+            output_original_image = original_image
+        else:
+            output_original_image = torch.zeros((1, original_h, original_w, 3), dtype=torch.float32)
+
+        return (restored_image.cpu(), restored_mask.cpu(), output_original_image.cpu())
+
+
+
+
+
 
 
 
