@@ -4290,268 +4290,6 @@ class Image_Solo_data:
         )
 
 
-def create_mask_feather(mask, smoothness):
-    if smoothness <= 0:
-        return mask.clone() if isinstance(mask, torch.Tensor) else torch.tensor(mask).float()
-    
-    if isinstance(mask, torch.Tensor):
-        mask_np = mask.squeeze().cpu().detach().numpy()
-        device = mask.device
-    else:
-        mask_np = mask.squeeze()
-        device = torch.device("cpu")
-    
-    mask_np = (mask_np > 0.5).astype(np.uint8)
-    dist = cv2.distanceTransform(mask_np, distanceType=cv2.DIST_L2, maskSize=5)
-    dist = np.clip(dist, 0, smoothness)
-    feather_mask = dist / smoothness
-    
-    feather_mask = torch.tensor(feather_mask).float().unsqueeze(0).to(device)
-    if isinstance(mask, torch.Tensor) and mask.ndim == 3:
-        feather_mask = feather_mask.repeat(mask.shape[0], 1, 1)
-    
-    return feather_mask
-
-
-class Image_solo_stitch:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "inpainted_image": ("IMAGE",),
-                "mask": ("MASK",),
-                "stitch": ("STITCH2",),
-                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "display": "slider"}),
-                "blend_factor": ("FLOAT", {"default": 1.0,"min": 0.0,"max": 1.0,"step": 0.01}),
-                "blend_mode": (["normal", "multiply", "screen", "overlay", "soft_light", "difference"],),
-                "opacity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "stitch_mode": (["crop_mask", "crop_image"], {"default": "crop_mask"}),
-                "recover_method":  (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"], {"default": "bilinear" }),
-            },
-        }
-
-    CATEGORY = "Apt_Preset/image"
-    RETURN_TYPES = ("IMAGE","IMAGE","IMAGE") 
-    RETURN_NAMES = ("image","recover_image","original_image") 
-    FUNCTION = "inpaint_stitch"
-
-    def apply_smooth_blur(self, image, mask, smoothness, bg_color="Alpha"):
-        batch_size = image.shape[0]
-        result_images = []
-        smoothed_masks = []       
-        color_map = {
-            "white": (255, 255, 255),
-            "black": (0, 0, 0),
-            "red": (255, 0, 0),
-            "green": (0, 255, 0),
-            "blue": (0, 0, 255),
-            "gray": (128, 128, 128) }       
-        for i in range(batch_size):
-            current_image = image[i].clone()
-            current_mask = mask[i] if i < mask.shape[0] else mask[0]
-            if smoothness > 0:
-                mask_tensor = create_mask_feather(current_mask, smoothness)
-            else:
-                mask_tensor = current_mask.clone()
-            if mask_tensor.dim() == 1:
-                mask_tensor = mask_tensor.unsqueeze(0)
-            elif mask_tensor.dim() > 2:
-                mask_tensor = mask_tensor.squeeze()
-                while mask_tensor.dim() > 2:
-                    mask_tensor = mask_tensor.squeeze(0)          
-            smoothed_mask = mask_tensor.clone()
-            unblurred_tensor = current_image.clone()
-            if current_image.shape[-1] != 3:
-                if current_image.shape[-1] == 4:
-                    current_image = current_image[:, :, :3]
-                    unblurred_tensor = unblurred_tensor[:, :, :3]
-                elif current_image.shape[-1] == 1:
-                    current_image = current_image.repeat(1, 1, 3)
-                    unblurred_tensor = unblurred_tensor.repeat(1, 1, 3)         
-            mask_expanded = mask_tensor.unsqueeze(-1).repeat(1, 1, 3)
-            result_tensor = current_image * mask_expanded + unblurred_tensor * (1 - mask_expanded)         
-            if bg_color != "Alpha":
-                bg_tensor = torch.zeros_like(current_image)
-                if bg_color in color_map:
-                    r, g, b = color_map[bg_color]
-                    bg_tensor[:, :, 0] = r / 255.0
-                    bg_tensor[:, :, 1] = g / 255.0
-                    bg_tensor[:, :, 2] = b / 255.0
-                result_tensor = result_tensor * mask_expanded + bg_tensor * (1 - mask_expanded)            
-            result_images.append(result_tensor.unsqueeze(0))
-            smoothed_masks.append(smoothed_mask.unsqueeze(0))       
-        final_image = torch.cat(result_images, dim=0)
-        final_mask = torch.cat(smoothed_masks, dim=0)
-        return (final_image, final_mask)
-
-    def create_feather_mask(self, width, height, feather_size):
-        if feather_size <= 0:
-            return np.ones((height, width), dtype=np.float32)
-        
-        feather = min(feather_size, width // 2, height // 2)
-        mask = np.ones((height, width), dtype=np.float32)
-        
-        for y in range(feather):
-            mask[y, :] = y / feather
-            mask[height - 1 - y, :] = y / feather
-        
-        for x in range(feather):
-            mask[:, x] = np.minimum(mask[:, x], x / feather)
-            mask[:, width - 1 - x] = np.minimum(mask[:, width - 1 - x], x / feather)
-        
-        return mask
-
-    def inpaint_stitch(self, inpainted_image, smoothness, mask, stitch, blend_factor, blend_mode, opacity, stitch_mode, recover_method):
-        original_h, original_w = stitch["original_shape"]
-        crop_x, crop_y = stitch["crop_position"]
-        crop_w, crop_h = stitch["crop_size"]
-        mask_crop_x, mask_crop_y, mask_crop_x2, mask_crop_y2 = stitch["mask_cropped_position"]
-        original_image_h, original_image_w = stitch["original_image_shape"]
-
-        if "bj_image" in stitch:
-            bj_image = stitch["bj_image"]
-        else:
-            bj_image = torch.zeros((1, original_h, original_w, 3), dtype=torch.float32)
-
-        if "original_image" in stitch:
-            original_image = stitch["original_image"]
-        else:
-            original_image = torch.zeros((1, original_image_h, original_image_w, 3), dtype=torch.float32)
-
-        if opacity < 1.0:
-            inpainted_image = inpainted_image * opacity
-
-        if inpainted_image.shape[1:3] != mask.shape[1:3]:               
-            mask = F.interpolate(mask.unsqueeze(1), size=(inpainted_image.shape[1], inpainted_image.shape[2]), mode='nearest').squeeze(1)
-
-        inpainted_np = (inpainted_image[0].cpu().numpy() * 255).astype(np.uint8)
-        mask_np = (mask[0].cpu().numpy() * 255).astype(np.uint8)
-        background_np = (bj_image[0].cpu().numpy() * 255).astype(np.uint8)
-
-        inpainted_resized = cv2.resize(inpainted_np, (crop_w, crop_h))
-        mask_blurred = cv2.resize(mask_np, (crop_w, crop_h))
-        background_resized = cv2.resize(background_np, (original_w, original_h))
-
-        result = np.zeros((original_h, original_w, 4), dtype=np.uint8)
-        result[:, :, :3] = background_resized.copy()
-        result[:, :, 3] = 255
-
-        if stitch_mode == "crop_mask":
-            inpainted_image, mask = self.apply_smooth_blur(inpainted_image, mask, smoothness, bg_color="Alpha")
-            inpainted_blurred = (inpainted_image[0].cpu().numpy() * 255).astype(np.uint8)
-            mask_blurred = (mask[0].cpu().numpy() * 255).astype(np.uint8)
-            
-            inpainted_blurred = cv2.resize(inpainted_blurred, (crop_w, crop_h))
-            mask_blurred = cv2.resize(mask_blurred, (crop_w, crop_h))
-            
-            mask_content = mask_blurred[mask_crop_y:mask_crop_y2, mask_crop_x:mask_crop_x2]
-            inpaint_content = inpainted_blurred[mask_crop_y:mask_crop_y2, mask_crop_x:mask_crop_x2]
-            
-            paste_x_start = max(0, crop_x + mask_crop_x)
-            paste_x_end = min(original_w, crop_x + mask_crop_x2)
-            paste_y_start = max(0, crop_y + mask_crop_y)
-            paste_y_end = min(original_h, crop_y + mask_crop_y2)
-            
-            alpha = mask_content / 255.0
-            expected_h = paste_y_end - paste_y_start
-            expected_w = paste_x_end - paste_x_start
-            
-            if alpha.shape[0] != expected_h or alpha.shape[1] != expected_w:
-                alpha = cv2.resize(alpha, (expected_w, expected_h))
-            
-            alpha = np.expand_dims(alpha, axis=-1).repeat(3, axis=-1)
-            background_content = result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3]
-            
-            if (inpaint_content.shape[0] < alpha.shape[0] or 
-                inpaint_content.shape[1] < alpha.shape[1]):
-                inpaint_content = cv2.resize(inpaint_content, (alpha.shape[1], alpha.shape[0]))
-            
-            inpaint_content = inpaint_content[:alpha.shape[0], :alpha.shape[1]]
-            
-            if len(inpaint_content.shape) == 3 and inpaint_content.shape[2] > 3:
-                inpaint_content = inpaint_content[:, :, :3]
-            elif len(inpaint_content.shape) == 2:
-                inpaint_content = np.stack([inpaint_content, inpaint_content, inpaint_content], axis=-1)
-            
-            if len(background_content.shape) == 2:
-                background_content = np.stack([background_content, background_content, background_content], axis=-1)
-            elif len(background_content.shape) == 3 and background_content.shape[2] > 3:
-                background_content = background_content[:, :, :3]
-            
-            blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
-            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
-            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha[..., 0] * 255).astype(np.uint8)
-
-        else:
-            # 核心修改：完全基于裁剪方框的宽高（crop_w/crop_h）生成羽化mask，不依赖任何mask相关尺寸
-            feather_mask = self.create_feather_mask(crop_w, crop_h, smoothness)
-            
-            # 基于裁剪方框计算贴合位置（纯矩形逻辑，无mask依赖）
-            paste_x_start = max(0, crop_x)
-            paste_x_end = min(original_w, crop_x + crop_w)
-            paste_y_start = max(0, crop_y)
-            paste_y_end = min(original_h, crop_y + crop_h)
-            
-            # 基于裁剪方框计算图像提取范围（纯矩形逻辑）
-            crop_x_start = max(0, paste_x_start - crop_x)
-            crop_x_end = min(crop_w, paste_x_end - crop_x)
-            crop_y_start = max(0, paste_y_start - crop_y)
-            crop_y_end = min(crop_h, paste_y_end - crop_y)
-            
-            # 提取矩形区域的图像内容（无mask裁剪）
-            inpaint_content = inpainted_resized[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
-            
-            # 提取对应的矩形羽化mask（无mask裁剪）
-            alpha_mask = feather_mask[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
-            alpha = np.expand_dims(alpha_mask, axis=-1).repeat(3, axis=-1)
-            
-            # 提取背景矩形区域
-            background_content = result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3]
-            
-            # 强制尺寸对齐（基于背景矩形尺寸，纯矩形匹配）
-            h, w = background_content.shape[:2]
-            inpaint_content = cv2.resize(inpaint_content, (w, h))
-            alpha = cv2.resize(alpha, (w, h))
-            
-            # 通道数统一（保持原逻辑）
-            if len(inpaint_content.shape) == 3 and inpaint_content.shape[2] > 3:
-                inpaint_content = inpaint_content[:, :, :3]
-            elif len(inpaint_content.shape) == 2:
-                inpaint_content = np.stack([inpaint_content, inpaint_content, inpaint_content], axis=-1)
-            
-            if len(background_content.shape) == 2:
-                background_content = np.stack([background_content, background_content, background_content], axis=-1)
-            elif len(background_content.shape) == 3 and background_content.shape[2] > 3:
-                background_content = background_content[:, :, :3]
-            
-            # 矩形区域混合（纯矩形羽化效果）
-            blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
-            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
-            result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha[..., 0] * 255).astype(np.uint8)
-
-        final_rgb = result[:, :, :3]
-        final_image_tensor = torch.from_numpy(final_rgb / 255.0).float().unsqueeze(0)
-        fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
-
-        recover_img, Fina_mask, stitch_info, scale_factor = Image_Resize_sum().resize(
-            image=fimage,
-            width=original_image_w, 
-            height=original_image_h, 
-            keep_proportion="stretch",
-            upscale_method=recover_method, 
-            divisible_by=1, 
-            pad_color="black", 
-            crop_position="center", 
-            get_image_size=None, 
-            mask=None, 
-            mask_stack=None,
-            pad_mask_remove=True)
-
-        fimage = convert_pil_image(fimage)
-        recover_img = convert_pil_image(recover_img)
-
-        return (fimage, fimage, original_image)
-
 
 class Image_solo_crop:
     @classmethod
@@ -4916,6 +4654,279 @@ class Image_solo_crop:
         }
 
         return (bj_image, bj_mask_tensor, cropped_image_tensor, cropped_mask_tensor, stitch)
+
+
+
+
+
+def create_mask_feather(mask, smoothness):
+    if smoothness <= 0:
+        return mask.clone() if isinstance(mask, torch.Tensor) else torch.tensor(mask).float()
+    if isinstance(mask, torch.Tensor):
+        mask_np = mask.squeeze().cpu().detach().numpy()
+        device = mask.device
+    else:
+        mask_np = mask.squeeze()
+        device = torch.device("cpu")
+    mask_np = (mask_np > 0.5).astype(np.uint8)
+    dist = cv2.distanceTransform(mask_np, distanceType=cv2.DIST_L2, maskSize=5)
+    dist = np.clip(dist, 0, smoothness)
+    feather_mask = dist / smoothness
+    feather_mask = torch.tensor(feather_mask).float().unsqueeze(0).to(device)
+    if isinstance(mask, torch.Tensor) and mask.ndim == 3:
+        feather_mask = feather_mask.repeat(mask.shape[0], 1, 1)
+    return feather_mask
+
+def create_feather_mask(width, height, feather_size):
+    if feather_size <= 0:
+        return np.ones((height, width), dtype=np.float32)
+    feather = min(feather_size, min(width, height) // 2)
+    mask = np.ones((height, width), dtype=np.float32)
+    for y in range(feather):
+        mask[y, :] = y / feather
+    for y in range(height - feather, height):
+        mask[y, :] = (height - y) / feather
+    for x in range(feather):
+        mask[:, x] = np.minimum(mask[:, x], x / feather)
+    for x in range(width - feather, width):
+        mask[:, x] = np.minimum(mask[:, x], (width - x) / feather)
+    return mask
+
+class Image_solo_stitch:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "inpainted_image": ("IMAGE",),
+                "mask": ("MASK",),
+                "stitch": ("STITCH2",),
+                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "display": "slider"}),
+                "blend_factor": ("FLOAT", {"default": 1.0,"min": 0.0,"max": 1.0,"step": 0.01}),
+                "blend_mode": (["normal", "multiply", "screen", "overlay", "soft_light", "difference"],),
+                "opacity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "stitch_mode": (["crop_mask", "crop_image"], {"default": "crop_mask"}),
+                "recover_method":  (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"], {"default": "bilinear" }),
+            },
+        }
+
+    CATEGORY = "Apt_Preset/image"
+    RETURN_TYPES = ("IMAGE","IMAGE","IMAGE")
+    RETURN_NAMES = ("image","recover_image","original_image")
+    FUNCTION = "inpaint_stitch"
+
+    def apply_smooth_blur(self, image, mask, smoothness, bg_color="Alpha"):
+        batch_size = image.shape[0]
+        result_images = []
+        smoothed_masks = []
+        color_map = {
+            "white": (255, 255, 255),
+            "black": (0, 0, 0),
+            "red": (255, 0, 0),
+            "green": (0, 255, 0),
+            "blue": (0, 0, 255),
+            "gray": (128, 128, 128)
+        }
+        for i in range(batch_size):
+            current_image = image[i].clone()
+            current_mask = mask[i] if i < mask.shape[0] else mask[0]
+            if smoothness > 0:
+                mask_tensor = create_mask_feather(current_mask, smoothness)
+            else:
+                mask_tensor = current_mask.clone()
+            if mask_tensor.dim() == 1:
+                mask_tensor = mask_tensor.unsqueeze(0)
+            elif mask_tensor.dim() > 2:
+                mask_tensor = mask_tensor.squeeze()
+                while mask_tensor.dim() > 2:
+                    mask_tensor = mask_tensor.squeeze(0)
+            smoothed_mask = mask_tensor.clone()
+            unblurred_tensor = current_image.clone()
+            if current_image.shape[-1] != 3:
+                if current_image.shape[-1] == 4:
+                    current_image = current_image[:, :, :3]
+                    unblurred_tensor = unblurred_tensor[:, :, :3]
+                elif current_image.shape[-1] == 1:
+                    current_image = current_image.repeat(1, 1, 3)
+                    unblurred_tensor = unblurred_tensor.repeat(1, 1, 3)
+            mask_expanded = mask_tensor.unsqueeze(-1).repeat(1, 1, 3)
+            result_tensor = current_image * mask_expanded + unblurred_tensor * (1 - mask_expanded)
+            if bg_color != "Alpha":
+                bg_tensor = torch.zeros_like(current_image)
+                if bg_color in color_map:
+                    r, g, b = color_map[bg_color]
+                    bg_tensor[:, :, 0] = r / 255.0
+                    bg_tensor[:, :, 1] = g / 255.0
+                    bg_tensor[:, :, 2] = b / 255.0
+                result_tensor = result_tensor * mask_expanded + bg_tensor * (1 - mask_expanded)
+            result_images.append(result_tensor.unsqueeze(0))
+            smoothed_masks.append(smoothed_mask.unsqueeze(0))
+        final_image = torch.cat(result_images, dim=0)
+        final_mask = torch.cat(smoothed_masks, dim=0)
+        return (final_image, final_mask)
+
+    def inpaint_stitch(self, inpainted_image, smoothness, mask, stitch, blend_factor, blend_mode, opacity, stitch_mode, recover_method):
+        original_h, original_w = stitch["original_shape"]
+        crop_x, crop_y = stitch["crop_position"]
+        crop_w, crop_h = stitch["crop_size"]
+        mask_crop_x, mask_crop_y, mask_crop_x2, mask_crop_y2 = stitch["mask_cropped_position"]
+        original_image_h, original_image_w = stitch["original_image_shape"]
+        if "bj_image" in stitch:
+            bj_image = stitch["bj_image"]
+        else:
+            bj_image = torch.zeros((1, original_h, original_w, 3), dtype=torch.float32)
+        if "original_image" in stitch:
+            original_image = stitch["original_image"]
+        else:
+            original_image = torch.zeros((1, original_image_h, original_image_w, 3), dtype=torch.float32)
+        if opacity < 1.0:
+            inpainted_image = inpainted_image * opacity
+        if inpainted_image.shape[1:3] != mask.shape[1:3]:
+            mask = F.interpolate(mask.unsqueeze(1), size=(inpainted_image.shape[1], inpainted_image.shape[2]), mode='nearest').squeeze(1)
+        inpainted_np = (inpainted_image[0].cpu().numpy() * 255).astype(np.uint8)
+        mask_np = (mask[0].cpu().numpy() * 255).astype(np.uint8)
+        background_np = (bj_image[0].cpu().numpy() * 255).astype(np.uint8)
+        inpainted_resized = cv2.resize(inpainted_np, (crop_w, crop_h))
+        mask_resized = cv2.resize(mask_np, (crop_w, crop_h))
+        background_resized = cv2.resize(background_np, (original_w, original_h))
+        result = np.zeros((original_h, original_w, 4), dtype=np.uint8)
+        result[:, :, :3] = background_resized.copy()
+        result[:, :, 3] = 255
+        if stitch_mode == "crop_mask":
+            inpainted_image, mask = self.apply_smooth_blur(inpainted_image, mask, smoothness, bg_color="Alpha")
+            inpainted_blurred = (inpainted_image[0].cpu().numpy() * 255).astype(np.uint8)
+            mask_blurred = (mask[0].cpu().numpy() * 255).astype(np.uint8)
+            inpainted_blurred = cv2.resize(inpainted_blurred, (crop_w, crop_h))
+            mask_blurred = cv2.resize(mask_blurred, (crop_w, crop_h))
+            mask_content = mask_blurred[mask_crop_y:mask_crop_y2, mask_crop_x:mask_crop_x2]
+            inpaint_content = inpainted_blurred[mask_crop_y:mask_crop_y2, mask_crop_x:mask_crop_x2]
+            if mask_content.size == 0 or inpaint_content.size == 0:
+                print("Warning: Mask content is empty, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+            paste_x_start = max(0, crop_x + mask_crop_x)
+            paste_x_end = min(original_w, crop_x + mask_crop_x2)
+            paste_y_start = max(0, crop_y + mask_crop_y)
+            paste_y_end = min(original_h, crop_y + mask_crop_y2)
+            if paste_x_start >= paste_x_end or paste_y_start >= paste_y_end:
+                print("Warning: Invalid paste region, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+            alpha = mask_content / 255.0
+            expected_h = paste_y_end - paste_y_start
+            expected_w = paste_x_end - paste_x_start
+            if alpha.shape[0] != expected_h or alpha.shape[1] != expected_w:
+                alpha = cv2.resize(alpha, (expected_w, expected_h))
+            alpha = np.expand_dims(alpha, axis=-1)
+            background_content = result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3]
+            if (background_content.shape[0] != alpha.shape[0] or 
+                background_content.shape[1] != alpha.shape[1]):
+                print("Warning: Dimension mismatch after processing, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+            if (inpaint_content.shape[0] < alpha.shape[0] or 
+                inpaint_content.shape[1] < alpha.shape[1]):
+                inpaint_content = cv2.resize(inpaint_content, (alpha.shape[1], alpha.shape[0]))
+            inpaint_content = inpaint_content[:alpha.shape[0], :alpha.shape[1]]
+            if len(inpaint_content.shape) == 3 and inpaint_content.shape[2] > 3:
+                inpaint_content = inpaint_content[:, :, :3]
+            elif len(inpaint_content.shape) == 2:
+                inpaint_content = np.stack([inpaint_content, inpaint_content, inpaint_content], axis=-1)
+            if len(background_content.shape) == 2:
+                background_content = np.stack([background_content, background_content, background_content], axis=-1)
+            elif len(background_content.shape) == 3 and background_content.shape[2] > 3:
+                background_content = background_content[:, :, :3]
+            try:
+                blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
+                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
+                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha * 255).astype(np.uint8).squeeze()
+            except Exception as e:
+                print(f"Warning: Error during blending operation: {e}, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+        else:
+            feather_mask = create_feather_mask(crop_w, crop_h, smoothness)
+            paste_x_start = max(0, crop_x)
+            paste_x_end = min(original_w, crop_x + crop_w)
+            paste_y_start = max(0, crop_y)
+            paste_y_end = min(original_h, crop_y + crop_h)
+            inpaint_content = inpainted_resized[
+                max(0, paste_y_start - crop_y) : max(0, paste_y_end - crop_y),
+                max(0, paste_x_start - crop_x) : max(0, paste_x_end - crop_x)
+            ]
+            if inpaint_content.size == 0:
+                print("Warning: Inpaint content is empty in crop_image mode, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+            if paste_x_start >= paste_x_end or paste_y_start >= paste_y_end:
+                print("Warning: Invalid paste region in crop_image mode, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+            alpha_mask = feather_mask[
+                max(0, paste_y_start - crop_y) : max(0, paste_y_end - crop_y),
+                max(0, paste_x_start - crop_x) : max(0, paste_x_end - crop_x)
+            ]
+            alpha = np.expand_dims(alpha_mask, axis=-1)
+            background_content = result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3]
+            if (background_content.shape[0] != alpha.shape[0] or 
+                background_content.shape[1] != alpha.shape[1] or
+                inpaint_content.shape[0] != alpha.shape[0] or
+                inpaint_content.shape[1] != alpha.shape[1]):
+                print("Warning: Dimension mismatch in crop_image mode, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+            if len(inpaint_content.shape) == 3 and inpaint_content.shape[2] > 3:
+                inpaint_content = inpaint_content[:, :, :3]
+            elif len(inpaint_content.shape) == 2:
+                inpaint_content = np.stack([inpaint_content, inpaint_content, inpaint_content], axis=-1)
+            if len(background_content.shape) == 2:
+                background_content = np.stack([background_content, background_content, background_content], axis=-1)
+            elif len(background_content.shape) == 3 and background_content.shape[2] > 3:
+                background_content = background_content[:, :, :3]
+            try:
+                blended = (inpaint_content * alpha + background_content * (1 - alpha)).astype(np.uint8)
+                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, :3] = blended
+                result[paste_y_start:paste_y_end, paste_x_start:paste_x_end, 3] = (alpha * 255).astype(np.uint8).squeeze()
+            except Exception as e:
+                print(f"Warning: Error during blending operation in crop_image mode: {e}, returning background image")
+                final_image_tensor = torch.from_numpy(background_resized / 255.0).float().unsqueeze(0)
+                fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+                recover_img = fimage
+                return (fimage, recover_img, original_image)
+        final_rgb = result[:, :, :3]
+        final_image_tensor = torch.from_numpy(final_rgb / 255.0).float().unsqueeze(0)
+        fimage = Blend().blend_images(bj_image, final_image_tensor, blend_factor, blend_mode)[0]
+        recover_img, Fina_mask, stitch_info, scale_factor = Image_Resize_sum().resize(
+            image=fimage,
+            width=original_image_w,
+            height=original_image_h,
+            keep_proportion="stretch",
+            upscale_method=recover_method,
+            divisible_by=1,
+            pad_color="black",
+            crop_position="center",
+            get_image_size=None,
+            mask=None,
+            mask_stack=None,
+            pad_mask_remove=True)
+        return (fimage, recover_img, original_image)
+
+
+
+
 
 
 #endregion----------------裁切组合--------------
@@ -6744,15 +6755,6 @@ class Image_Resize_sum_restore:
             output_original_image = torch.zeros((1, original_h, original_w, 3), dtype=torch.float32)
 
         return (restored_image.cpu(), restored_mask.cpu(), output_original_image.cpu())
-
-
-
-
-
-
-
-
-
 
 
 
