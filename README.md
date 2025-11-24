@@ -10,16 +10,13 @@ The current workflow connections are becoming increasingly dense, making them di
 
 
 # I. Update Record
-2025.10.6 fix image node.Image_Resize_sum,Image_Resize_sum_restore
 
-2025.10.19 add QwenEditplus stack，Supports stable direct output of large images
-
-2025.10.27 Added a new node, sum ksampler, and optimized the layout
 
 2025.11.2 Add, input_text, output_text, support reading and storing text in multiple formats
           add sum_ksample Includes the switching of multiple sampling methods
 
-2025.11.13  Add qwenV3_L APi support Multi-image analysis
+2025.11.24 Add API calls to the Qwen model, AI_Qwen, AI_Qwen_text, 
+           or local calls to the Qwen model: AI_Ollama_image, AI_Ollama_text
 
 
 # II. Usage Guide
