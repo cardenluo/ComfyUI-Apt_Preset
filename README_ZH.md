@@ -15,6 +15,8 @@
 2025.11.24 增加API调用Qwen模型，AI_Qwen、AI_Qwen_text ，或本地调用Qwen模型
            AI_Ollama_image，AI_Ollama_text
 
+2025.11.25 快速debug增加update按钮 view Data，view_mask, view_GetShape,view_Mask_And_Img
+
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
 ## <font color="#0000FF"> 1、全能加载器 Sum_load_adv, 支持 GGuf模型</font>
