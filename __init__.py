@@ -477,7 +477,7 @@ NODE_CLASS_MAPPINGS= {
 
 
 "AI_GLM4":AI_GLM4,
-"AI_Qwen": AI_Qwen,
+"AI_Qwen":AI_Qwen,
 "AI_Qwen_text":AI_Qwen_text,
 "AI_PresetSave":AI_PresetSave,
 
@@ -521,12 +521,7 @@ NODE_CLASS_MAPPINGS= {
 #----------------------外部导入节点-----------------------
 
 
-
-
-
-"type_BasiPIPE": type_BasiPIPE, #(Deprecated)
-"load_FLUX": load_FLUX,   #TITLE = "load_FLUX (Deprecated)"    CATEGORY = "Apt_Preset/🚫Deprecated/🚫"
-"load_basic": load_basic, #(Deprecated)
+"type_BasiPIPE": type_BasiPIPE, #(Deprecated) #TITLE = "load_FLUX (Deprecated)"    CATEGORY = "Apt_Preset/🚫Deprecated/🚫"
 "lay_imgCanvas":lay_imgCanvasNode, #(Deprecated)
 "Image_Resize2": Image_Resize2,#(Deprecated)
 "chx_Ksampler_Kontext": chx_Ksampler_Kontext,   #(Deprecated)
@@ -534,7 +529,7 @@ NODE_CLASS_MAPPINGS= {
 "chx_Ksampler_Kontext_inpaint": chx_Ksampler_Kontext_inpaint,  #(Deprecated)
 "sum_stack_all": sum_stack_all,#(Deprecated)
 "stack_sum_pack": stack_sum_pack,#(Deprecated)
-"IO_adjust_image": IO_adjust_image,#(Deprecated)
+
 
 "type_Image_List2Batch":type_Image_List2Batch,#(Deprecated)
 "type_Image_Batch2List":type_Image_Batch2List,#(Deprecated)
@@ -547,7 +542,6 @@ NODE_CLASS_MAPPINGS= {
 "chx_StyleModelApply":chx_StyleModelApply,#(Deprecated)
 "chx_Style_Redux":chx_Style_Redux,#(Deprecated)
 
-"view_latent": view_LatentAdvanced,#(Deprecated)
 
 "img_effect_CircleWarp": img_effect_CircleWarp,#(Deprecated)
 "img_effect_Stretch": img_effect_Stretch,#(Deprecated)
@@ -556,16 +550,14 @@ NODE_CLASS_MAPPINGS= {
 
 
 "lay_MaskGrid": lay_MaskGrid,#(Deprecated)  CATEGORY = "Apt_Preset/Deprecated"
-"latent_ratio": latent_ratio,#(Deprecated)
 "pre_QwenEdit":pre_QwenEdit,   #(Deprecated)
 "sum_stack_QwenEdit":sum_stack_QwenEdit, #(Deprecated)
 "model_Style_Align":model_Style_Align,#(Deprecated)
 "chx_Ksampler_VisualStyle": chx_Ksampler_VisualStyle, #(Deprecated)
-"lay_image_mul":lay_image_mul,#(Deprecated)
 "chx_Ksampler_dual_area": chx_Ksampler_dual_area,#(Deprecated)
 "Image_batch_select": Image_batch_select,#(Deprecated)
 "create_Mask_match_shape": create_Mask_match_shape,#(Deprecated)   
-"pre_condi_combine_switch":pre_condi_combine_switch,#(Deprecated)
+
 
 #------------------------隐藏节点-------------------------
 
