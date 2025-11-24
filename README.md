@@ -18,6 +18,7 @@ The current workflow connections are becoming increasingly dense, making them di
 2025.11.24 Add API calls to the Qwen model, AI_Qwen, AI_Qwen_text, 
            or local calls to the Qwen model: AI_Ollama_image, AI_Ollama_text
 
+2025.11.25  Quickly debug and add an update button: view Data, view_mask, view_GetShape, view_Mask_And_Img
 
 # II. Usage Guide
 
