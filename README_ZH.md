@@ -9,12 +9,11 @@
 
 # <font color="#000000"> 一、Update record更新记录</font>
 
-2025.10.6 修复还原节点连续生成，图层调节时，出现像素分裂问题
-
-2025.10.19 添加 QwenEditplus stack,支持大尺寸图稳定输出
-
 2025.11.2  添加，输入_文本，输出_文本，支持多种格式的文本读取和存放
            添加sum_sampler总采样器，可以在一个采样器上实现多次方式的切换
+           
+2025.11.24 增加API调用Qwen模型，AI_Qwen、AI_Qwen_text ，或本地调用Qwen模型
+           AI_Ollama_image，AI_Ollama_text
 
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
