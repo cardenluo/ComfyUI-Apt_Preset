@@ -930,13 +930,14 @@ class AI_Ollama_text:
             "required": {
                 "model_name": (["qwen2.5-coder:7b","llama3:8b",], {"default": "qwen2.5-coder:7b"}),
                 "preset": (list(TEXT_PROMPTS.keys()), {"default": "None"}),
+
+            },
+            "optional": {
+                "custom_system_prompt": ("STRING", {"default": "", "multiline": False, "description": "自定义系统提示词，填写后将替代预设的preset"}),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.1}),
                 "max_tokens": ("INT", {"default": 512, "min": 1, "max": 4096}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 999999999, "step": 1}),
-            },
-            "optional": {
-                "custom_system_prompt": ("STRING", {"default": "", "multiline": True, "description": "自定义系统提示词，填写后将替代预设的preset"}),
             },
         }
     
