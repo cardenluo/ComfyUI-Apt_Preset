@@ -543,6 +543,8 @@ def load_text_prompts():
 
 TEXT_PROMPTS = load_text_prompts()
 
+
+
 class AI_Qwen_text:
     def __init__(self):
         self.api_key = get_aliyun_api_key()
@@ -553,18 +555,15 @@ class AI_Qwen_text:
             "required": {
                 "llm_model": (["qwen3-coder-plus", "qwen3-coder-plus-2025-09-23", "qwen3-coder-flash", 
                               "qwen3-coder-480b-a35b-instruct", "qwen3-coder-30b-a3b-instruct"], {
-                    "default": "qwen3-coder-plus",
-                }),
+                    "default": "qwen3-coder-plus", }),
+
                 "preset": (list(TEXT_PROMPTS.keys()), {"default": "None"}),
-                "text": ("STRING", {"default": "", "multiline": True}),
-                "max_tokens": ("INT", {
-                    "default": 1024,
-                    "min": 10,
-                    "max": 8192,
-                    "step": 10,
-                }),
+
             },
             "optional": {
+                "custom_system_prompt": ("STRING", {"default": "", "multiline": False, "description": "自定义系统提示词，填写后将替代预设的preset"}),
+                "text": ("STRING", {"default": "", "multiline": True}),
+                "max_tokens": ("INT", {"default": 1024, "min": 10, "max": 8192,"step": 10, }),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 999999999, "step": 1}),
                 "api_key_input": ("STRING", {"default": "", "multiline": False, }),
             }
@@ -575,27 +574,37 @@ class AI_Qwen_text:
     FUNCTION = "analyze"
     CATEGORY = "Apt_Preset/prompt"
 
-    def analyze(self, llm_model, preset, text, max_tokens, api_key_input="", seed=0):
-        preset_text = TEXT_PROMPTS.get(preset, "") if preset != "None" else ""
+    def analyze(self, llm_model, preset, text, max_tokens, custom_system_prompt="", api_key_input="", seed=0):
+        # 优先使用自定义系统提示词，无内容时使用预设
+        if custom_system_prompt.strip():
+            system_prompt = custom_system_prompt.strip()
+        else:
+            system_prompt = TEXT_PROMPTS.get(preset, "") if preset != "None" else ""
+        
         text_content = text.strip()
         
-        if text_content and preset_text:
-            final_prompt = f"{preset_text}\n\n{text_content}"
+        # 构建最终提示词
+        if text_content and system_prompt:
+            final_prompt = f"{system_prompt}\n\n{text_content}"
         elif text_content:
             final_prompt = text_content
         else:
-            final_prompt = preset_text if preset_text else "请根据需求完成相关代码或文本任务（如代码生成、代码解释、编程问题解答等）"
+            final_prompt = system_prompt if system_prompt else "请根据需求完成相关代码或文本任务（如代码生成、代码解释、编程问题解答等）"
 
+        # 校验最终提示词
         if not final_prompt.strip():
-            return ("错误：请输入有效文本或选择合适的预设", preset_text)
+            return ("错误：请输入有效文本或选择合适的预设/填写自定义系统提示词", system_prompt)
         
+        # 检查依赖
         if not REMOVER_AVAILABLE or not Conversation:
-            return ("错误：dashscope库导入失败，请安装最新版本dashscope（pip install -U dashscope）", preset_text)
+            return ("错误：dashscope库导入失败，请安装最新版本dashscope（pip install -U dashscope）", system_prompt)
         
+        # 处理API密钥
         api_key = api_key_input.strip() if api_key_input.strip() else self.api_key
         if not api_key:
-            return ("API密钥未配置，请通过以下方式之一设置：\n1. 在节点输入中直接填写API密钥\n2. 设置系统环境变量 aliyun_API_KEY\n3. 或在custom_nodes/ComfyUI-Apt_Preset/NodeExcel目录下创建ApiKey_AI_Qwen.txt并写入密钥", preset_text)
+            return ("API密钥未配置，请通过以下方式之一设置：\n1. 在节点输入中直接填写API密钥\n2. 设置系统环境变量 aliyun_API_KEY\n3. 或在custom_nodes/ComfyUI-Apt_Preset/NodeExcel目录下创建ApiKey_AI_Qwen.txt并写入密钥", system_prompt)
         
+        # 调用分析函数
         try:
             result = analyze_text(
                 llm_model, 
@@ -604,9 +613,16 @@ class AI_Qwen_text:
                 max_tokens,
                 seed if seed != 0 else None
             )
-            return (result, preset_text)
+            return (result, system_prompt)
         except Exception as e:
-            return (f"处理失败: {str(e)}", preset_text)
+            return (f"处理失败: {str(e)}", system_prompt)
+
+
+
+
+
+
+
 
 #endregion--------------------------------------------------------------------------
 
@@ -906,6 +922,7 @@ class AI_Ollama_image:
 
 
 
+
 class AI_Ollama_text:
     @classmethod
     def INPUT_TYPES(cls):
@@ -918,15 +935,25 @@ class AI_Ollama_text:
                 "max_tokens": ("INT", {"default": 512, "min": 1, "max": 4096}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 999999999, "step": 1}),
             },
-            "optional": {},
+            "optional": {
+                "custom_system_prompt": ("STRING", {"default": "", "multiline": True, "description": "自定义系统提示词，填写后将替代预设的preset"}),
+            },
         }
+    
     RETURN_TYPES = ("STRING",)
     FUNCTION = "run"
     RETURN_NAMES = ("pos", )
     CATEGORY = "Apt_Preset/prompt"
-    def run(self, model_name, preset, prompt, temperature, max_tokens, seed=0):
-        system_prompt = TEXT_PROMPTS.get(preset, "") if preset != "None" else ""
-        ollama_host="http://localhost:11434"
+    
+    def run(self, model_name, preset, prompt, temperature, max_tokens, seed=0, custom_system_prompt=""):
+        # 优先使用自定义系统提示词，无内容时使用预设
+        if custom_system_prompt.strip():
+            system_prompt = custom_system_prompt.strip()
+        else:
+            system_prompt = TEXT_PROMPTS.get(preset, "") if preset != "None" else ""
+        
+        ollama_host = "http://localhost:11434"
+        
         try:
             url = f"{ollama_host}/api/generate"
             headers = {"Content-Type": "application/json"}
@@ -938,10 +965,13 @@ class AI_Ollama_text:
                 "max_tokens": max_tokens,
                 "stream": True
             }
+            
             if seed != 0:
                 data["seed"] = seed
+            
             response = requests.post(url, headers=headers, data=json.dumps(data), stream=True)
             response.raise_for_status()
+            
             result = ""
             for line in response.iter_lines():
                 if line:
@@ -950,7 +980,9 @@ class AI_Ollama_text:
                         result += line_data['response']
                     if line_data.get('done', False):
                         break
+            
             return (result,)
+        
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
                 return (f"模型未找到：请先执行 `ollama pull {model_name}` 下载模型到{OLLAMA_MODEL_PATH}",)
