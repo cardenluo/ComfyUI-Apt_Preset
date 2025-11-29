@@ -115,6 +115,11 @@ To load GGUF models, please first install [ComfyUI-GGUF](https://github.com/city
 
 To use the load_Nanchaku node, please first install [ComfyUI-nunchaku](https://github.com/nunchaku-tech/ComfyUI-nunchaku).
 
+ollama model: download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
+
+
+
+
 ## Disclaimer
 This open-source project and its contents are provided "AS IS" without any express or implied warranties, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 
