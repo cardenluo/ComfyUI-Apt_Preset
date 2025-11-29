@@ -20,6 +20,9 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.11.25  Quickly debug and add an update button: view Data, view_mask, view_GetShape, view_Mask_And_Img
 
+2025.11.29  add nodes: AI_Ollama_image and AI_Ollama_text
+            download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
