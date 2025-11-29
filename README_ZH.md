@@ -17,6 +17,10 @@
 
 2025.11.25 快速debug增加update按钮 view Data，view_mask, view_GetShape,view_Mask_And_Img
 
+2025.11.29  添加节点: AI_Ollama_image and AI_Ollama_text
+           下载模型放到下面的路径  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
+
+            
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
 ## <font color="#0000FF"> 1、全能加载器 Sum_load_adv, 支持 GGuf模型</font>
