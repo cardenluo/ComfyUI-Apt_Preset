@@ -20,6 +20,10 @@
 2025.11.29  添加节点: AI_Ollama_image and AI_Ollama_text
            下载模型放到下面的路径  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
 
+2025.11.30  添加节点：排版_文本绘制 
+
+<img width="3427" height="1456" alt="image" src="https://github.com/user-attachments/assets/e2840c78-4dfe-40c7-8a08-18ba9f340ab1" />
+
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
