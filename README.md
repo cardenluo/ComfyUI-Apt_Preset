@@ -23,6 +23,8 @@ The current workflow connections are becoming increasingly dense, making them di
 2025.11.29  add nodes: AI_Ollama_image and AI_Ollama_text
             download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
 
+2025.11.30 add nodes" lay text sum "  Can achieve various effects of text
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
