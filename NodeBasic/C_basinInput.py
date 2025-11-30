@@ -1,0 +1,297 @@
+import comfy
+from ..main_unit import *
+
+
+class basicIn_Seed:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("seed",)
+    FUNCTION = "pass_seed"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def pass_seed(self, seed):
+        return (seed,)
+
+
+class basicIn_float:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input": ("STRING", {"default": "", "multiline": False})
+            }
+        }
+    RETURN_TYPES = ("FLOAT",)
+    RETURN_NAMES = ("float",)
+    FUNCTION = "convert_to_float"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def convert_to_float(self, input):
+        try:
+            return (float(input),)
+        except (ValueError, TypeError):
+            raise ValueError("请输入有效的数字")
+
+
+class basicIn_Sampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "sampler": ( comfy.samplers.KSampler.SAMPLERS, ),
+            }
+        }
+
+    RETURN_TYPES = (comfy.samplers.KSampler.SAMPLERS,)
+    RETURN_NAMES = ("sampler",)
+    FUNCTION = "pass_sampler"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def pass_sampler(self, sampler):
+        return (sampler,)
+
+
+class basicIn_Scheduler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
+            }
+        }
+
+    RETURN_TYPES = (comfy.samplers.KSampler.SCHEDULERS,)
+    RETURN_NAMES = ("scheduler",)
+    FUNCTION = "pass_scheduler"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def pass_scheduler(self, scheduler):
+        return (scheduler,)
+
+
+class basicIn_string:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_text": ("STRING", {"default": "", "multiline": True}),
+            }
+        }
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "pass_text"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def pass_text(self, input_text):
+        return (input_text,)
+
+
+class basicIn_Remap_slide:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "source_min": ("FLOAT", {"default": 0.0, "min": -9999, "max": 9999, "step": 0.001}),
+                "source_max": ("FLOAT", {"default": 1.0, "min": -9999, "max": 9999, "step": 0.001}),
+                "slide": ("FLOAT", {"default": 0.0, "min": 0, "max": 1, "step": 0.001, "display": "slider"}),
+                "precision": ("FLOAT", {"default": 0.001, "min": 0.001, "max": 1000, "step": 0.001}),
+            },
+            "optional": {
+            },
+        }
+
+    FUNCTION = "set_range"
+    RETURN_TYPES = ("FLOAT", "FLOAT", )
+    RETURN_NAMES = ("source_value", "slide_value", )
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def set_range(self, source_min, source_max, precision, slide):
+
+        step = max(0.0001, precision)           
+        slide_rounded = round(slide / step) * step
+        
+        source_value = source_min + (source_max - source_min) * slide_rounded        
+        slide_value = slide_rounded
+        
+        return (source_value, slide_value)
+
+
+
+class basicIn_int:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input": ("INT", { "min": 0, "max": 16384,  "step": 1,})
+            }
+        }
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("int",)
+    FUNCTION = "convert_to_int"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def convert_to_int(self, input):
+        try:
+            return (int(input),)
+        except (ValueError, TypeError):
+            return (None,)
+
+
+
+class basicIn_color:
+ 
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        # 定义颜色预设映射
+        color_mapping = {
+            "white": (255, 255, 255),
+            "black": (0, 0, 0),
+            "red": (255, 0, 0),
+            "green": (0, 255, 0),
+            "blue": (0, 0, 255),
+            "yellow": (255, 255, 0),
+            "cyan": (0, 255, 255),
+            "magenta": (255, 0, 255),
+            "orange": (255, 165, 0),
+            "purple": (128, 0, 128),
+            "pink": (255, 192, 203),
+            "brown": (165, 42, 42),
+            "gray": (128, 128, 128),
+            "lightgray": (211, 211, 211),
+            "darkgray": (169, 169, 169),
+            "olive": (128, 128, 0),
+            "lime": (0, 128, 0),
+            "teal": (0, 128, 128),
+            "navy": (0, 0, 128),
+            "maroon": (128, 0, 0),
+            "fuchsia": (255, 0, 128),
+            "aqua": (0, 255, 128),
+            "silver": (192, 192, 192),
+            "gold": (255, 215, 0),
+            "turquoise": (64, 224, 208),
+            "lavender": (230, 230, 250),
+            "violet": (238, 130, 238),
+            "coral": (255, 127, 80),
+            "indigo": (75, 0, 130),    
+        }
+        
+        # 准备预设选项，添加自定义选项在最前面
+        preset_options = ["custom"] + list(color_mapping.keys())
+        # 预设选项的显示标签
+        preset_labels = ["自定义颜色"] + [name.capitalize() for name in color_mapping.keys()]
+        
+        return {
+            "required": {
+                "preset": (
+                    preset_options, 
+                    {"default": "custom", "label": preset_labels}
+                ),
+                "hex_str": ("STRING", {"default": "#FFFFFF", "description": "十六进制颜色值，格式如 #FFFFFF 或 FFFFFF"}),
+            }
+        }
+
+    # 修改返回类型，增加 hex_str 输出
+    RETURN_TYPES = ("COLOR", "STRING")  
+    RETURN_NAMES = ("color", "hex_str")
+    FUNCTION = "output_color"
+    CATEGORY = "Apt_Preset/View_IO/😺backup"
+
+    def output_color(self, preset, hex_str):
+        # 定义颜色预设映射
+        color_mapping = {
+            "white": (255, 255, 255),
+            "black": (0, 0, 0),
+            "red": (255, 0, 0),
+            "green": (0, 255, 0),
+            "blue": (0, 0, 255),
+            "yellow": (255, 255, 0),
+            "cyan": (0, 255, 255),
+            "magenta": (255, 0, 255),
+            "orange": (255, 165, 0),
+            "purple": (128, 0, 128),
+            "pink": (255, 192, 203),
+            "brown": (165, 42, 42),
+            "gray": (128, 128, 128),
+            "lightgray": (211, 211, 211),
+            "darkgray": (169, 169, 169),
+            "olive": (128, 128, 0),
+            "lime": (0, 128, 0),
+            "teal": (0, 128, 128),
+            "navy": (0, 0, 128),
+            "maroon": (128, 0, 0),
+            "fuchsia": (255, 0, 128),
+            "aqua": (0, 255, 128),
+            "silver": (192, 192, 192),
+            "gold": (255, 215, 0),
+            "turquoise": (64, 224, 208),
+            "lavender": (230, 230, 250),
+            "violet": (238, 130, 238),
+            "coral": (255, 127, 80),
+            "indigo": (75, 0, 130),    
+        }
+        
+        # 清理输入的十六进制字符串（移除空格、确保小写、补全#号）
+        hex_str = hex_str.strip().lower()
+        if not hex_str.startswith("#"):
+            hex_str = f"#{hex_str}"
+        # 确保长度正确（# + 6位十六进制）
+        if len(hex_str) == 4:  # 处理简写形式如 #fff
+            hex_str = f"#{hex_str[1]}{hex_str[1]}{hex_str[2]}{hex_str[2]}{hex_str[3]}{hex_str[3]}"
+        elif len(hex_str) != 7:
+            # 非法格式时默认返回白色
+            hex_str = "#ffffff"
+
+        # 根据预设选择颜色（覆盖自定义输入）
+        if preset != "custom":
+            r, g, b = color_mapping[preset]
+            hex_str = f"#{r:02x}{g:02x}{b:02x}"
+        
+        # 同时返回 color（兼容原有）和 hex_str（新增输出）
+        return (hex_str, hex_str)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
