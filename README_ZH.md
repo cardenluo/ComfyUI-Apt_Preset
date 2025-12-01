@@ -125,6 +125,8 @@ git clone https://github.com/cardenluo/ComfyUI-Apt_Preset.git
 
 3、要使用load_Nanchaku节点，请先安装[ComfyUI-nunchaku](https://github.com/nunchaku-tech/ComfyUI-nunchaku) .并确保运行正常。
 
+4、ollama model: 下载并放置在  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
+
 5、<a id="AAA">部分节点将使用资源扩展包。请下载它。 : [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf). 
 或者在这里下载它: [Mask_FaceSegment](https://huggingface.co/1038lab/segformer_face) 、[Mask_ClothesSegment](https://huggingface.co/1038lab/segformer_clothes)、 [Mask_BodySegment](https://huggingface.co/Metal3d/deeplabv3p-resnet50-human)
 然后将整个文件夹放入comfyUI/models中</a>
