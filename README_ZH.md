@@ -117,13 +117,23 @@ git clone https://github.com/cardenluo/ComfyUI-Apt_Preset.git
 
 注意Note：
 
-要使用功能controlNet schdule控制，请先安装[ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet) 
+1、要使用功能controlNet schdule控制，请先安装[ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet) 
 
-要加载GGUF模型，请先安装[ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) 
+2、要加载GGUF模型，请先安装[ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) 
 
-要使用load_Nanchaku节点，请先安装[ComfyUI-nunchaku](https://github.com/nunchaku-tech/ComfyUI-nunchaku) .
+3、要使用load_Nanchaku节点，请先安装[ComfyUI-nunchaku](https://github.com/nunchaku-tech/ComfyUI-nunchaku) .并确保运行正常。
 
-
+5、<a id="AAA">部分节点将使用资源扩展包。请下载它。 : [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf). 
+或者在这里下载它: [Mask_FaceSegment](https://huggingface.co/1038lab/segformer_face) 、[Mask_ClothesSegment](https://huggingface.co/1038lab/segformer_clothes)、 [Mask_BodySegment](https://huggingface.co/Metal3d/deeplabv3p-resnet50-human)
+然后将整个文件夹放入comfyUI/models中</a>
+```
+├── ComfyUI/models/Apt_File
+|     ├──body_segment
+├── ComfyUI/models/Apt_File
+|     ├──segformer_clothes
+├── ComfyUI/models/Apt_File
+|     ├──segformer_face
+```
 
 ## Disclaimer免责声明
 This open-source project and its contents are provided "AS IS" without any express or implied warranties, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
