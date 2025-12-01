@@ -25,6 +25,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.11.30 add nodes" lay text sum "  Can achieve various effects of text
 
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
@@ -114,16 +115,18 @@ Double-click install.bat to install dependencies
 
 Note:
 
-To use the controlNet schedule control feature, please first install [ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet)
+1、To use the controlNet schedule control feature, please first install [ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet)
 
-To load GGUF models, please first install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
+2、To load GGUF models, please first install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
 
-To use the load_Nanchaku node, please first install [ComfyUI-nunchaku](https://github.com/nunchaku-tech/ComfyUI-nunchaku).
+3、To use the load_Nanchaku node, please first install and make sure it works normal [ComfyUI-nunchaku](https://github.com/nunchaku-tech/ComfyUI-nunchaku).
 
-ollama model: download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
+4、ollama model: download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
 
-
-
+5、部分节点会用到资源扩展包 ，请在这下载 [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf) 将整个文件夹放到 comfyUI/models  或者到这下载：
+   [Mask_FaceSegment]（https://huggingface.co/1038lab/segformer_face）
+   [Mask_ClothesSegment] （https://huggingface.co/1038lab/segformer_clothes）
+   [Mask_BodySegment]（https://huggingface.co/Metal3d/deeplabv3p-resnet50-human）
 
 ## Disclaimer
 This open-source project and its contents are provided "AS IS" without any express or implied warranties, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
