@@ -25,9 +25,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.11.30 add nodes" lay text sum "  Can achieve various effects of text
 
-2025.12.1 Some nodes will use the resource expansion pack. Please download it : [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf). 
-or download it here: [Mask_FaceSegment](https://huggingface.co/1038lab/segformer_face) [Mask_ClothesSegment](https://huggingface.co/1038lab/segformer_clothes) [Mask_BodySegment](https://huggingface.co/Metal3d/deeplabv3p-resnet50-human)
-Then Place the entire folder into comfyUI/models, 
+2025.12.1 [Some nodes will use the resource expansion pack.](#AAA)
 
 # II. Usage Guide
 
@@ -126,9 +124,9 @@ Note:
 
 4、ollama model: download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
 
-5、Some nodes will use the resource expansion pack. Please download it : [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf). 
+5、<a id="AAA">Some nodes will use the resource expansion pack. Please download it : [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf). 
 or download it here: [Mask_FaceSegment](https://huggingface.co/1038lab/segformer_face) 、[Mask_ClothesSegment](https://huggingface.co/1038lab/segformer_clothes)、 [Mask_BodySegment](https://huggingface.co/Metal3d/deeplabv3p-resnet50-human)
-Then Place the entire folder into comfyUI/models, 
+Then Place the entire folder into comfyUI/models</a>
 ```
 ├── ComfyUI/models/Apt_File
 |     ├──body_segment
