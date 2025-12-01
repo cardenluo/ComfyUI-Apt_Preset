@@ -25,7 +25,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.11.30 add nodes" lay text sum "  Can achieve various effects of text
 
-2025.12.1 [Some nodes will use the resource expansion pack.](#AAA)
+2025.12.1  Some nodes will use the resource [expansion pack.](#AAA)
 
 # II. Usage Guide
 
