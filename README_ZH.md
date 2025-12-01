@@ -24,7 +24,7 @@
 
 <img width="3427" height="1456" alt="image" src="https://github.com/user-attachments/assets/e2840c78-4dfe-40c7-8a08-18ba9f340ab1" />
 
-2025.12.1  一些节点将使用资源<a id="AAA">扩展包</a>
+2025.12.1  一些节点将使用资源[扩展包](#AAA)
 
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
