@@ -129,16 +129,14 @@ Note:
 5、Some nodes will use the resource expansion pack. Please download it : [Apt_file](https://pan.quark.cn/s/31a0aa5ceabf). 
 or download it here: [Mask_FaceSegment](https://huggingface.co/1038lab/segformer_face) 、[Mask_ClothesSegment](https://huggingface.co/1038lab/segformer_clothes)、 [Mask_BodySegment](https://huggingface.co/Metal3d/deeplabv3p-resnet50-human)
 Then Place the entire folder into comfyUI/models, 
-
+```
 ├── ComfyUI/models/Apt_File
 |     ├──body_segment
 ├── ComfyUI/models/Apt_File
 |     ├──segformer_clothes
 ├── ComfyUI/models/Apt_File
 |     ├──segformer_face
-
-
-
+```
 
 ## Disclaimer
 This open-source project and its contents are provided "AS IS" without any express or implied warranties, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
