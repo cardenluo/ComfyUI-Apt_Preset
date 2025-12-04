@@ -414,7 +414,7 @@ NODE_CLASS_MAPPINGS= {
 "Coordinate_MarkRender":Coordinate_MarkRender,
 "Coordinate_fromMask":Coordinate_fromMask,
 "Coordinate_pointCombine":Coordinate_pointCombine,
-#"Coordinate_loadImage":Coordinate_loadImage,
+"Coordinate_loadImage":Coordinate_loadImage,
 
 
 
@@ -621,6 +621,7 @@ NODE_CLASS_MAPPINGS= {
 NODE_DISPLAY_NAME_MAPPINGS = {
   
 }
+
 
 
 
