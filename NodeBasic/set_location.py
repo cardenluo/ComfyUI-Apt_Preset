@@ -515,159 +515,6 @@ class Coordinate_fromMask:
 
 
 
-class Coordinate_loadImage:
-    @classmethod
-    def INPUT_TYPES(cls):
-        input_dir = folder_paths.get_input_directory()
-        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f)) and f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'))]
-        return {
-            "required": {
-                "image": (sorted(files), {"image_upload": True}),
-                "points_data": ("STRING", {"default": "[]", "multiline": False}),
-            },
-        }
-    
-    NAME = "Coordinate_loadImage"
-    RETURN_TYPES = ("IMAGE","IMAGE", "STRING",)
-    RETURN_NAMES = ("ORIGINAL_IMAGE","img_tensor", "coordinates")
-    FUNCTION = "process"
-    CATEGORY = "Apt_Preset/image/ImageCoordinate"
-    OUTPUT_NODE = False
-    
-    def process(self, image, points_data="[]"):
-        image_path = folder_paths.get_annotated_filepath(image)
-        pil_image = Image.open(image_path).convert("RGB")
-        original_image = pil_image.copy()
-        img_width, img_height = pil_image.size
-        
-        try:
-            points = json.loads(points_data)
-        except json.JSONDecodeError:
-            points = []
-        
-        if points and len(points) > 0:
-            pil_image = self._draw_markers(pil_image, points, img_width, img_height)
-        
-        # 处理带标记的图片
-        img_array = np.array(pil_image).astype(np.float32) / 255.0
-        img_tensor = torch.from_numpy(img_array).unsqueeze(0)
-        
-        # 处理原图
-        original_array = np.array(original_image).astype(np.float32) / 255.0
-        original_tensor = torch.from_numpy(original_array).unsqueeze(0)
-        
-        return (original_tensor,img_tensor,points_data)
-    
-    def _draw_markers(self, image, points, img_width, img_height):
-        marker_color = (255, 69, 0, 230)
-        text_rgb = (255, 255, 255)
-        
-        if image.mode != 'RGBA':
-            result_image = image.convert('RGBA')
-        else:
-            result_image = image.copy()
-            
-        overlay = Image.new('RGBA', result_image.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        
-        marker_radius = max(14, min(img_width, img_height) // 40)
-        outline_width = max(2, marker_radius // 10)
-        outline_color = (255, 255, 255, 230)
-        
-        for point in points:
-            rel_x = point.get("x", 0)
-            rel_y = point.get("y", 0)
-            index = point.get("index", 1)
-            abs_x = int(rel_x * img_width)
-            abs_y = int(rel_y * img_height)
-            
-            draw.ellipse(
-                [
-                    abs_x - marker_radius - outline_width,
-                    abs_y - marker_radius - outline_width,
-                    abs_x + marker_radius + outline_width,
-                    abs_y + marker_radius + outline_width
-                ],
-                fill=outline_color
-            )
-            
-            draw.ellipse(
-                [
-                    abs_x - marker_radius,
-                    abs_y - marker_radius,
-                    abs_x + marker_radius,
-                    abs_y + marker_radius
-                ],
-                fill=marker_color
-            )
-            
-            self._draw_number_geometric(draw, abs_x, abs_y, index, marker_radius, text_rgb)
-        
-        result_image = Image.alpha_composite(result_image, overlay)
-        return result_image.convert('RGB')
-    
-    def _draw_number_geometric(self, draw, cx, cy, number, radius, color):
-        num_str = str(number)
-        digit_height = int(radius * 1.0)
-        digit_width = int(radius * 0.55)
-        spacing = int(radius * 0.15)
-        line_width = max(2, radius // 5)
-        total_width = len(num_str) * digit_width + (len(num_str) - 1) * spacing
-        start_x = cx - total_width // 2
-        
-        for i, digit_char in enumerate(num_str):
-            digit = int(digit_char)
-            digit_cx = start_x + i * (digit_width + spacing) + digit_width // 2
-            self._draw_single_digit(draw, digit_cx, cy, digit, digit_width, digit_height, line_width, color)
-    
-    def _draw_single_digit(self, draw, cx, cy, digit, width, height, line_width, color):
-        hw = width // 2
-        hh = height // 2
-        gap = line_width // 2
-        
-        segments = {
-            'a': [(cx - hw + gap, cy - hh), (cx + hw - gap, cy - hh)],
-            'b': [(cx + hw, cy - hh + gap), (cx + hw, cy - gap)],
-            'c': [(cx + hw, cy + gap), (cx + hw, cy + hh - gap)],
-            'd': [(cx - hw + gap, cy + hh), (cx + hw - gap, cy + hh)],
-            'e': [(cx - hw, cy + gap), (cx - hw, cy + hh - gap)],
-            'f': [(cx - hw, cy - hh + gap), (cx - hw, cy - gap)],
-            'g': [(cx - hw + gap, cy), (cx + hw - gap, cy)],
-        }
-        
-        digit_segments = {
-            0: ['a', 'b', 'c', 'd', 'e', 'f'],
-            1: ['b', 'c'],
-            2: ['a', 'b', 'g', 'e', 'd'],
-            3: ['a', 'b', 'g', 'c', 'd'],
-            4: ['f', 'g', 'b', 'c'],
-            5: ['a', 'f', 'g', 'c', 'd'],
-            6: ['a', 'f', 'e', 'd', 'c', 'g'],
-            7: ['a', 'b', 'c'],
-            8: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
-            9: ['a', 'b', 'c', 'd', 'f', 'g'],
-        }
-        
-        for seg_name in digit_segments.get(digit, []):
-            if seg_name in segments:
-                start, end = segments[seg_name]
-                draw.line([start, end], fill=color, width=line_width)
-                r = line_width // 2
-                draw.ellipse([start[0]-r, start[1]-r, start[0]+r, start[1]+r], fill=color)
-                draw.ellipse([end[0]-r, end[1]-r, end[0]+r, end[1]+r], fill=color)
-    
-    @classmethod
-    def IS_CHANGED(cls, image, **kwargs):
-        points_data = kwargs.get("points_data", "[]")
-        return f"{image}_{points_data}"
-    
-    @classmethod
-    def VALIDATE_INPUTS(cls, image,** kwargs):
-        if not folder_paths.exists_annotated_filepath(image):
-            return f"图片文件不存在: {image}"
-        return True
-
-
 
 class Coordinate_pointCombine:
     @classmethod
@@ -731,6 +578,88 @@ class Coordinate_pointCombine:
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
+
+
+
+class Coordinate_Generator:
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = {
+            "required": {
+                "output_count": ("INT", {
+                    "default": 5, 
+                    "min": 1, 
+                    "max": 5, 
+                    "step": 1,
+                    "tooltip": "输出的坐标点数量 (1-5)"
+                })
+            }
+        }
+        for i in range(1, 6):
+            inputs["required"][f"x{i}"] = ("FLOAT", {
+                "default": 0.0, 
+                "min": 0.0, 
+                "max": 1.0, 
+                "step": 0.01,
+                "tooltip": f"点{i}的X坐标 (0.0-1.0)"
+            })
+            inputs["required"][f"y{i}"] = ("FLOAT", {
+                "default": 0.0, 
+                "min": 0.0, 
+                "max": 1.0, 
+                "step": 0.01,
+                "tooltip": f"点{i}的Y坐标 (0.0-1.0)"
+            })
+        return inputs
+    
+    NAME = "Coordinate Input 5"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("coordinates",)
+    FUNCTION = "generate_coordinates"
+    CATEGORY = "Apt_Preset/image/ImageCoordinate"
+    
+    def generate_coordinates(self, **kwargs):
+        output_count = kwargs.get("output_count", 5)
+        output_count = max(1, min(5, output_count))
+        
+        points = []
+        for i in range(1, output_count + 1):
+            x_key = f"x{i}"
+            y_key = f"y{i}"
+            x = max(0.0, min(1.0, kwargs.get(x_key, 0.0)))
+            y = max(0.0, min(1.0, kwargs.get(y_key, 0.0)))
+            points.append({
+                "x": x,
+                "y": y,
+                "index": i
+            })
+        coordinates = json.dumps(points)
+        return (coordinates,)
+    
+    @classmethod
+    def IS_CHANGED(cls,** kwargs):
+        values = []
+        values.append(str(kwargs.get("output_count", 5)))
+        for i in range(1, 6):
+            values.append(str(kwargs.get(f"x{i}", 0.0)))
+            values.append(str(kwargs.get(f"y{i}", 0.0)))
+        return "_".join(values)
+    
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        output_count = kwargs.get("output_count", 5)
+        if not (1 <= output_count <= 5):
+            return f"输出数量必须在1到5之间"
+        
+        for i in range(1, 6):
+            x = kwargs.get(f"x{i}", 0.0)
+            y = kwargs.get(f"y{i}", 0.0)
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                return f"坐标值必须在0.0到1.0之间 (点{i})"
+        return True
+    
+
+
 
 
 
