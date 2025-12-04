@@ -27,6 +27,9 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.12.1  Some nodes will use the resource [expansion pack.](#AAA)
 
+2025.12.4 fix sum_load  support z-image-gguf   
+          add new Coordinate series nodes  Coordinate_SplitIndex,Coordinate_Generator,Coordinate_fromImage,Coordinate_MarkRender,Coordinate_fromMask,Coordinate_pointCombine,
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
