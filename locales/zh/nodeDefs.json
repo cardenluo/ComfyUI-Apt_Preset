@@ -12440,6 +12440,25 @@
 },
 
 
+"Coordinate_Index2Text": {
+    "display_name": "坐标_索引转文本",
+    "inputs": {
+        "original_coordinate": {
+            "name": "原始坐标"
+        },
+        "index_replace": {
+            "name": "索引替换规则"
+        }
+    },
+    "outputs": {
+        "Coordinate": {
+            "name": "处理后坐标"
+        }
+    }
+},
+
+
+
 "Coordinate_pointCombine": {
     "display_name": "坐标_多点合并",
     "inputs": {
@@ -12557,7 +12576,37 @@
 
 
 
-
+"Image_safe_size": {
+    "display_name": "图像_安全尺寸",
+    "inputs": {
+        "image": {
+            "name": "图像"
+        },
+        "constraint_mode": {
+            "name": "约束模式"
+        },
+        "min_width": {
+            "name": "最小宽度"
+        },
+        "min_height": {
+            "name": "最小高度"
+        },
+        "max_width": {
+            "name": "最大宽度"
+        },
+        "max_height": {
+            "name": "最大高度"
+        },
+        "divisor": {
+            "name": "整除数"
+        }
+    },
+    "outputs": {
+        "IMAGE": {
+            "name": "图像"
+        }
+    }
+},
 
 
 "Coordinate_SplitIndex": {
