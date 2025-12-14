@@ -13,7 +13,21 @@ from PIL import Image
 from scipy.stats import norm
 
 
+
+
+from strenum import StrEnum
+
+
+
+
 matplotlib.use("Agg")
+
+try:
+    from strenum import StrEnum
+    REMOVER_AVAILABLE = True  
+except ImportError:
+    StrEnum = None
+    REMOVER_AVAILABLE = False  
 
 
 
@@ -38,9 +52,11 @@ def loglinear_interp(t_steps, num_steps):
     interped_ys = np.exp(new_ys)[::-1].copy()
     return interped_ys
 
-class GraphScale(enum.StrEnum):
-    linear = "linear"
-    log = "log"
+class GraphScale(StrEnum):
+    NONE = "none"
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
 
 def tensor_to_graph_image(tensor, color="blue", scale: GraphScale = GraphScale.linear):
     plt.figure(figsize=(10, 6), dpi=100)
