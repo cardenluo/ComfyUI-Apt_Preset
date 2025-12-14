@@ -1,4 +1,4 @@
-import enum
+
 import matplotlib
 import torch
 
@@ -24,6 +24,15 @@ try:
 except ImportError:
     Interpreter = None
     REMOVER_AVAILABLE = False 
+
+
+try:
+    import enum
+    REMOVER_AVAILABLE = True  
+except ImportError:
+    enum = None
+    REMOVER_AVAILABLE = False 
+
 
 
 
