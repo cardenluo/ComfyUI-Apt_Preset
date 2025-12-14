@@ -47,9 +47,17 @@ def loglinear_interp(t_steps, num_steps):
     interped_ys = np.exp(new_ys)[::-1].copy()
     return interped_ys
 
-class GraphScale(enum.StrEnum):
+
+class GraphScale(enum.Enum):
     linear = "linear"
     log = "log"
+
+    def __str__(self):
+        return self.value
+    def __repr__(self):
+        return self.value
+
+
 
 def tensor_to_graph_image(tensor, color="blue", scale: GraphScale = GraphScale.linear):
     plt.figure(figsize=(10, 6), dpi=100)
