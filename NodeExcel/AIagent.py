@@ -803,8 +803,11 @@ def resize_to_limit(img, max_pixels=262144):
 
 IMAGE_PROMPTS = load_Image_Analysis()
 TEXT_PROMPTS = load_TEXT_PROMPTS()
-OLLMAMA_MODEL_NAME_IMAGE = ["qwen3-vl:latest",]
-OLLMAMA_MODEL_NAME_TEXT = []
+OLLMAMA_MODEL_NAME_IMAGE = ["None","qwen3-vl:latest","gemma3:12b"]
+OLLMAMA_MODEL_NAME_TEXT = ["None","qwen2.5-coder:7b","qwen3-coder:30b","gemma3:1b-it-fp16","gemma3:12b"]
+
+
+
 
 class AI_Ollama_image:
     @classmethod
@@ -823,6 +826,7 @@ class AI_Ollama_image:
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
                 "enable_ocr": ("BOOLEAN", {"default": False}),
+                "custom_model": ("STRING", {"multiline": False, "default": ""}),
             },
         }
     RETURN_TYPES = ("STRING", "STRING")
@@ -842,8 +846,14 @@ class AI_Ollama_image:
         image_1=None,
         image_2=None,
         image_3=None,
-        enable_ocr=False
+        enable_ocr=False,
+        custom_model=""
     ):
+        if custom_model.strip():
+            actual_model = custom_model.strip()
+        else:
+            actual_model = model_name
+            
         cleaned_analysis_prompt = analysis_prompt.strip()
         if cleaned_analysis_prompt:
             final_prompt = cleaned_analysis_prompt
@@ -880,7 +890,7 @@ class AI_Ollama_image:
         ollama_host = "http://localhost:11434"
         try:
             data = {
-                "model": model_name,
+                "model": actual_model,
                 "prompt": final_prompt,
                 "images": img_base64_list,
                 "temperature": temperature,
@@ -925,9 +935,9 @@ class AI_Ollama_image:
             return (error_msg, final_prompt)
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
-                error_msg = f"模型未找到：请先执行 `ollama pull {model_name}` 下载模型到{OLLAMA_MODEL_PATH}"
+                error_msg = f"模型未找到：请先执行 `ollama pull {actual_model}` 下载模型到{OLLAMA_MODEL_PATH}"
             elif e.response.status_code == 500:
-                error_msg = f"Ollama服务内部错误：1. 请更新Ollama到最新版本（≥0.12.7）；2. 重新拉取模型 `ollama pull {model_name}` 到{OLLAMA_MODEL_PATH}；3. 检查图片是否损坏"
+                error_msg = f"Ollama服务内部错误：1. 请更新Ollama到最新版本（≥0.12.7）；2. 重新拉取模型 `ollama pull {actual_model}` 到{OLLAMA_MODEL_PATH}；3. 检查图片是否损坏"
             else:
                 error_msg = f"HTTP错误：{str(e)}"
             return (error_msg, final_prompt)
@@ -939,12 +949,13 @@ class AI_Ollama_image:
 
 
 
+
 class AI_Ollama_text:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (["qwen2.5-coder:7b","qwen3-coder:30b","qwen3-vl:latest",], {"default": "qwen2.5-coder:7b"}),
+                "model_name": (OLLMAMA_MODEL_NAME_TEXT, {"default": "qwen2.5-coder:7b"}),
                 "preset": (list(TEXT_PROMPTS.keys()), {"default": "None"}),
             },
             "optional": {
@@ -953,6 +964,7 @@ class AI_Ollama_text:
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.1}),
                 "max_tokens": ("INT", {"default": 512, "min": 1, "max": 4096}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 999999999, "step": 1}),
+                "custom_model": ("STRING", {"multiline": False, "default": ""}),
             },
         }
 
@@ -961,7 +973,12 @@ class AI_Ollama_text:
     FUNCTION = "run"
     CATEGORY = "Apt_Preset/prompt"
     
-    def run(self, model_name, preset, prompt, temperature, max_tokens, seed=0, custom_system_prompt=""):
+    def run(self, model_name, preset, prompt, temperature, max_tokens, seed=0, custom_system_prompt="", custom_model=""):
+        if custom_model.strip():
+            actual_model = custom_model.strip()
+        else:
+            actual_model = model_name
+        
         if custom_system_prompt.strip():
             system_prompt = custom_system_prompt.strip()
         else:
@@ -973,7 +990,7 @@ class AI_Ollama_text:
             url = f"{ollama_host}/api/generate"
             headers = {"Content-Type": "application/json"}
             data = {
-                "model": model_name,
+                "model": actual_model,
                 "prompt": prompt,
                 "system": system_prompt,
                 "temperature": temperature,
@@ -1000,7 +1017,7 @@ class AI_Ollama_text:
         
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
-                return (f"模型未找到：请先执行 `ollama pull {model_name}` 下载模型到{OLLAMA_MODEL_PATH}", system_prompt)
+                return (f"模型未找到：请先执行 `ollama pull {actual_model}` 下载模型到{OLLAMA_MODEL_PATH}", system_prompt)
             else:
                 return (f"HTTP错误：{str(e)}", system_prompt)
         except Exception as e:
@@ -1008,15 +1025,23 @@ class AI_Ollama_text:
 
 
 
+
 class Ai_Ollama_RunModel:
+    _instance = None  # 用于跟踪实例
+    
     def __init__(self):
+        if Ai_Ollama_RunModel._instance is not None:
+            raise RuntimeError("只能创建一个 Ai_Ollama_RunModel 实例")
+        Ai_Ollama_RunModel._instance = self
         self.process: Optional[subprocess.Popen] = None
         self.is_running = False
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {},
+            "required": {
+                "enable_service": ("BOOLEAN", {"default": True, "label_on": "启动", "label_off": "停止"})
+            },
             "optional": {
                 "timeout": ("INT", {
                     "default": 20,
@@ -1029,25 +1054,67 @@ class Ai_Ollama_RunModel:
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("status",)
-    FUNCTION = "run_ollama_service"
+    FUNCTION = "control_ollama_service"
     CATEGORY = "Apt_Preset/prompt"
 
-    def run_ollama_service(self, timeout: int = 10):
+    def control_ollama_service(self, enable_service: bool, timeout: int = 20):
+        if enable_service:
+            return self._start_service(timeout)
+        else:
+            return self._stop_service()
+
+    def _start_service(self, timeout: int = 20):
+        # 检查是否已经运行
+        if self.is_running and self.process and self.process.poll() is None:
+            return (f"ℹ️ Ollama服务已经在运行中\n"
+                    f"📁 模型存储路径：{OLLAMA_MODEL_PATH}\n"
+                    f"🆔 服务PID：{self.process.pid}\n"
+                    f"🌐 API地址：http://localhost:11434",)
+
+        # 检查ollama命令是否存在
         try:
             subprocess.run(["ollama", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         except FileNotFoundError:
             return ("错误：未找到ollama命令！\n请确保：1. 已安装Ollama（https://ollama.com/download）\n       2. Ollama已添加到系统环境变量",)
 
+        # 停止现有的ollama进程
         self._stop_existing_ollama()
 
+        # 启动服务
         return self._lightweight_start_service(timeout)
+
+    def _stop_service(self):
+        if not self.is_running and (self.process is None or self.process.poll() is not None):
+            return ("ℹ️ Ollama服务未在运行",)
+
+        try:
+            # 终止进程
+            if self.process and self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait()
+            
+            # 杀死系统中的其他ollama进程
+            self._stop_existing_ollama()
+            
+            self.is_running = False
+            self.process = None
+            
+            return ("✅ Ollama服务已停止",)
+        except Exception as e:
+            return (f"停止服务时出错：{str(e)}",)
 
     def _stop_existing_ollama(self):
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/f", "/im", "ollama.exe"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                subprocess.run(["taskkill", "/f", "/im", "ollama.exe"], 
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
             else:
-                subprocess.run(["pkill", "ollama"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                subprocess.run(["pkill", "-f", "ollama"], 
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
             time.sleep(1)
         except:
             pass
@@ -1112,8 +1179,15 @@ class Ai_Ollama_RunModel:
                 if "error" in line.lower() or "listening" in line.lower() or "started" in line.lower():
                     pass
         if process.poll() is not None:
-            pass
-        self.is_running = False
+            self.is_running = False
+            self.process = None
+
+    @classmethod
+    def cleanup(cls):
+        """清理资源"""
+        if cls._instance and cls._instance.is_running:
+            cls._instance._stop_service()
+        cls._instance = None
 
 
 
