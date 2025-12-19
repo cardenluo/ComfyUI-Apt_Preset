@@ -429,7 +429,7 @@ class text_mul_Split:
 
 
 
-class text_batch_combine :
+class text_list_combine :
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -440,7 +440,7 @@ class text_batch_combine :
     RETURN_TYPES = ("STRING",) 
     RETURN_NAMES = ("text",) 
     FUNCTION = "run"
-    CATEGORY = "Apt_Preset/🚫Deprecated/🚫"
+    CATEGORY = "Apt_Preset/prompt/text_tool"
 
     INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (False,)
