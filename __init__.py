@@ -590,7 +590,7 @@ NODE_CLASS_MAPPINGS= {
 "Data_sampleData": Data_sampleData,#(Deprecated)
 "Data_presetData":Data_presetData,#(Deprecated)
 
-"text_batch_combine ": text_batch_combine ,  #(Deprecated)
+"text_list_combine ": text_list_combine ,  #(Deprecated)
 
 "img_effect_CircleWarp": img_effect_CircleWarp,#(Deprecated)
 "img_effect_Stretch": img_effect_Stretch,#(Deprecated)
