@@ -18,11 +18,6 @@ import comfy.utils
 
 
 
-
-
-
-
-
 from ..main_unit import *
 from ..office_unit import ImageUpscaleWithModel,UpscaleModelLoader
 
@@ -1158,6 +1153,7 @@ class flow_bridge_image:
             except Exception as e:
                 print(f"Failed to load image from local file: {e}")
         return None
+
 
 
 
