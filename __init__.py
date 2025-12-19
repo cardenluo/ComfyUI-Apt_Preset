@@ -536,6 +536,7 @@ NODE_CLASS_MAPPINGS= {
 
 #------------------------流程相关-------------------------
 
+"flow_bridge_image":flow_bridge_image,
 "flow_clear_cache": flow_clear_cache,
 "flow_judge":flow_judge,
 "flow_auto_pixel":flow_auto_pixel, 
@@ -629,6 +630,7 @@ NODE_CLASS_MAPPINGS= {
 NODE_DISPLAY_NAME_MAPPINGS = {
   
 }
+
 
 
 
