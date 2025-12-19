@@ -1230,7 +1230,7 @@ class pre_qwen_controlnet:
                         strength3,  
                         context=None, 
                         controlnet1=None, controlnet2=None, controlnet3=None,
-                        image1=None, image2=None, image3=None, vae=None,latent_image=None,latent_mask=None,):
+                        image1=None, image2=None, image3=None, vae=None,latent_image=None, latent_mask=None,):
 
 
 
@@ -1242,23 +1242,85 @@ class pre_qwen_controlnet:
 
         if controlnet1 != "None" and image1 is not None:
             cn1=ModelPatchLoader().load_model_patch(controlnet1)[0]
-            model=QwenImageDiffsynthControlnet().diffsynth_controlnet(model, cn1, vae, image1, strength1, latent_mask)[0]
+            model=QwenImageDiffsynthControlnet().diffsynth_controlnet(model, cn1, vae, image1, strength1, latent_image, latent_mask)[0]
 
 
         if controlnet2 != "None" and image2 is not None:
             cn2=ModelPatchLoader().load_model_patch(controlnet2)[0]
-            model=QwenImageDiffsynthControlnet().diffsynth_controlnet(model, cn2, vae, image2, strength2, latent_mask)[0]
+            model=QwenImageDiffsynthControlnet().diffsynth_controlnet(model, cn2, vae, image2, strength2, latent_image, latent_mask)[0]
 
 
         if controlnet3 != "None" and image3 is not None:
             cn3=ModelPatchLoader().load_model_patch(controlnet3)[0]
-            model=QwenImageDiffsynthControlnet().diffsynth_controlnet(model, cn3, vae, image3, strength3, latent_mask)[0]
+            model=QwenImageDiffsynthControlnet().diffsynth_controlnet(model, cn3, vae, image3, strength3, latent_image, latent_mask)[0]
 
 
         if latent_image is not None:
             positive, negative, latent = self.addConditioning(
                 positive, negative, latent_image, vae, 
                 mask=latent_mask if latent_mask is not None else None)
+
+        context = new_context(context, model=model, positive=positive, negative=negative, latent=latent)
+        return (context, model, positive, negative, latent)
+
+
+
+
+
+class ZImageFun(QwenImageDiffsynthControlnet):
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "model": ("MODEL",),
+                              "model_patch": ("MODEL_PATCH",),
+                              "vae": ("VAE",),
+                              "strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
+                              },
+                "optional": {"image": ("IMAGE",), "inpaint_image": ("IMAGE",), "mask": ("MASK",)}}
+
+    CATEGORY = "advanced/loaders/zimage"
+
+
+
+
+class pre_ZImageInpaint_patch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {"context": ("RUN_CONTEXT",),
+            },
+            "optional": {
+                "image": ("IMAGE",),
+                "controlnet": (folder_paths.get_filename_list("model_patches"), {"default":"Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors"}),
+                "strength": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 2.0, "step": 0.01}),         
+                "inpaint_image": ("IMAGE", ),
+                "mask": ("MASK", ),
+
+            },
+
+        }
+
+    RETURN_TYPES = ("RUN_CONTEXT","MODEL","CONDITIONING","CONDITIONING","LATENT" )
+    RETURN_NAMES = ("context","model","positive","negative","latent" )
+    CATEGORY = "Apt_Preset/chx_tool/controlnet"
+    FUNCTION = "load_controlnet"
+
+
+    def load_controlnet(self, 
+                        strength,  
+                        context=None, 
+                        controlnet=None, 
+                        image=None, vae=None,inpaint_image=None, mask=None,):
+
+
+        vae = context.get("vae", None)
+        model = context.get("model", None)
+        positive = context.get("positive", None)
+        negative = context.get("negative", None)
+        latent = context.get("latent", None)
+
+
+        cn1=ModelPatchLoader().load_model_patch(controlnet)[0]
+        model=ZImageFun().diffsynth_controlnet(model, cn1, vae, image, strength, inpaint_image, mask)[0]
 
         context = new_context(context, model=model, positive=positive, negative=negative, latent=latent)
         return (context, model, positive, negative, latent)
