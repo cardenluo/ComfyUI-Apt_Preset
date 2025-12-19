@@ -987,7 +987,177 @@ class flow_Translate_Node_office:
 
 
 
+import torch
+import numpy as np
+from PIL import Image, PngImagePlugin
+import os
+import folder_paths
+from pathlib import Path
+import uuid
+import json
 
+lazy_options = {
+    "lazy": True
+}
+
+ExecutionBlocker = None
+try:
+    from comfy_execution.graph import ExecutionBlocker
+except ImportError:
+    class ExecutionBlocker:
+        def __init__(self, value):
+            self.value = value
+
+
+class flow_bridge_image:
+    OUTPUT_NODE = True
+
+    def __init__(self):
+        self.stored_image = None
+        self.stored_mask = None
+        self.temp_subfolder = "zml_image_memory_previews"
+        self.temp_output_dir = folder_paths.get_temp_directory()
+        self.persistence_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image_memory_cache.png")
+        self.prompt = None
+        self.extra_pnginfo = None
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "disable_input": ("BOOLEAN", {"default": False}),
+                "disable_output": ("BOOLEAN", {"default": False}),
+                "select_output_index": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1}),
+            },
+            "optional": {
+                "image": ("IMAGE", lazy_options),
+                "mask": ("MASK", lazy_options),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+                "unique_id": "UNIQUE_ID",
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("image", "mask")
+    FUNCTION = "store_and_retrieve"
+    CATEGORY = "Apt_Preset/flow"
+    
+    def check_lazy_status(self, disable_input, **kwargs):
+        if disable_input:
+            return None
+        required_inputs = []
+        if "image" in kwargs:
+            required_inputs.append("image")
+        if "mask" in kwargs:
+            required_inputs.append("mask")
+        return required_inputs
+
+    def store_and_retrieve(self, disable_input, disable_output, select_output_index, image=None, mask=None, prompt=None, extra_pnginfo=None, unique_id=None):
+        self.prompt = prompt
+        self.extra_pnginfo = extra_pnginfo
+        
+        image_to_output = None
+        mask_to_output = None
+
+        if disable_input:
+            image_to_output = self.stored_image
+            mask_to_output = self.stored_mask
+        elif image is not None:
+            self.stored_image = image
+            self.stored_mask = mask
+            image_to_output = image
+            mask_to_output = mask
+        else:
+            image_to_output = self.stored_image
+            mask_to_output = self.stored_mask
+
+        if image_to_output is None:
+            default_size = 1
+            image_to_output = torch.zeros((1, default_size, default_size, 3), dtype=torch.float32, device="cpu")
+            
+        if mask_to_output is None:
+            # Create a default mask matching the image dimensions
+            if image_to_output is not None:
+                batch_size, height, width, _ = image_to_output.shape
+                mask_to_output = torch.ones((batch_size, height, width), dtype=torch.float32, device="cpu")
+            else:
+                mask_to_output = torch.ones((1, default_size, default_size), dtype=torch.float32, device="cpu")
+
+        subfolder_path = os.path.join(self.temp_output_dir, self.temp_subfolder)
+        os.makedirs(subfolder_path, exist_ok=True)
+
+        ui_image_data = []
+        batch_size = image_to_output.shape[0]
+        
+        for i in range(batch_size):
+            current_image = image_to_output[i:i+1]
+            
+            if current_image.shape[1] == 1 and current_image.shape[2] == 1:
+                preview_image_tensor = torch.zeros((1, 32, 32, 3), dtype=torch.float32, device=current_image.device)
+                pil_image = Image.fromarray((preview_image_tensor.squeeze(0).cpu().numpy() * 255).astype(np.uint8))
+            else:
+                pil_image = Image.fromarray((current_image.squeeze(0).cpu().numpy() * 255).astype(np.uint8))
+
+            filename = f"zml_image_memory_batch_{i}_{uuid.uuid4()}.png"
+            file_path = os.path.join(subfolder_path, filename)
+
+            metadata = PngImagePlugin.PngInfo()
+
+            if self.prompt is not None:
+                try:
+                    metadata.add_text("prompt", json.dumps(self.prompt))
+                except Exception:
+                    pass
+            if self.extra_pnginfo is not None:
+                for key, value in self.extra_pnginfo.items():
+                    try:
+                        metadata.add_text(key, json.dumps(value))
+                    except Exception:
+                        pass
+
+            pil_image.save(file_path, pnginfo=metadata, compress_level=4)
+            ui_image_data.append({"filename": filename, "subfolder": self.temp_subfolder, "type": "temp"})
+        
+        if select_output_index == 0:
+            selected_image = image_to_output
+            selected_mask = mask_to_output
+        else:
+            zero_based_index = select_output_index - 1
+            selected_index = min(zero_based_index, batch_size - 1) if batch_size > 0 else 0
+            selected_image = image_to_output[selected_index:selected_index+1]
+            if mask_to_output is not None and selected_index < mask_to_output.shape[0]:
+                selected_mask = mask_to_output[selected_index:selected_index+1]
+            else:
+                selected_mask = mask_to_output[:1] if mask_to_output is not None else None
+
+        if disable_output and ExecutionBlocker is not None:
+            output_image = ExecutionBlocker(None)
+            output_mask = ExecutionBlocker(None)
+        else:
+            output_image = selected_image
+            output_mask = selected_mask
+            
+        return {"ui": {"images": ui_image_data}, "result": (output_image, output_mask)}
+
+    def _save_to_local(self, image_tensor):
+        try:
+            pil_image = Image.fromarray((image_tensor.squeeze(0).cpu().numpy() * 255).astype(np.uint8))
+            pil_image.save(self.persistence_file, "PNG")
+        except Exception as e:
+            print(f"Failed to save image locally: {e}")
+
+    def _load_from_local(self):
+        if os.path.exists(self.persistence_file):
+            try:
+                pil_image = Image.open(self.persistence_file).convert('RGB')
+                image_np = np.array(pil_image).astype(np.float32) / 255.0
+                return torch.from_numpy(image_np).unsqueeze(0)
+            except Exception as e:
+                print(f"Failed to load image from local file: {e}")
+        return None
 
 
 
