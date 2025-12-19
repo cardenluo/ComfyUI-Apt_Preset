@@ -121,7 +121,7 @@ NODE_CLASS_MAPPINGS= {
 
 #---------control tool------------------------------------------#
 
-
+"pre_ZImageInpaint_patch": pre_ZImageInpaint_patch,
 "pre_qwen_controlnet": pre_qwen_controlnet,    
 
 "pre_Kontext": pre_Kontext,                           
@@ -629,6 +629,7 @@ NODE_CLASS_MAPPINGS= {
 NODE_DISPLAY_NAME_MAPPINGS = {
   
 }
+
 
 
 
