@@ -670,11 +670,17 @@ class Ai_Ollama_RunModel:
     _instance = None  # 用于跟踪实例
     
     def __init__(self):
+        # 移除单例限制，允许ComfyUI正常创建实例
+        # 如果已有实例，则复用其状态
         if Ai_Ollama_RunModel._instance is not None:
-            raise RuntimeError("只能创建一个 Ai_Ollama_RunModel 实例")
-        Ai_Ollama_RunModel._instance = self
-        self.process: Optional[subprocess.Popen] = None
-        self.is_running = False
+            # 复用现有实例的状态
+            self.process = Ai_Ollama_RunModel._instance.process
+            self.is_running = Ai_Ollama_RunModel._instance.is_running
+        else:
+            # 新实例初始化
+            self.process: Optional[subprocess.Popen] = None
+            self.is_running = False
+            Ai_Ollama_RunModel._instance = self
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -796,7 +802,7 @@ class Ai_Ollama_RunModel:
                 f"🌐 API地址：http://localhost:11434\n"
                 "💡 提示：\n"
                 "  1. 服务已在后台运行，可通过API调用任意已下载的模型\n"
-                "  2. 停止服务需手动结束PID（Windows任务管理器/Linux/macOS pkill ollama）\n"
+                "  2. 停止服务：启动器运行>关闭服务器或（Windows任务管理器/Linux/macOS pkill ollama）\n"
                 "  3. 模型需提前下载到上述路径（命令：ollama pull 模型名）"
             )
             return (success_msg,)
@@ -916,12 +922,14 @@ def download_image_to_tensor(url):
         print(f"ERROR: Failed to download image from URL {url}: {e}")
         return None
 
+
+
 class Ai_doubao_seedream:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "main_image": ("IMAGE",),
+                "main_image1": ("IMAGE",),
                 "prompt": ("STRING", {"multiline": True,"default": ""}),
                 "model": (["doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"],),
                 "seed": ("INT", {"default": -1, "min": -1, "max": 2147483647}),
@@ -929,9 +937,9 @@ class Ai_doubao_seedream:
                 "auto_resize": (["crop", "pad", "stretch"], {"default": "crop"}),
             },
             "optional": {
-                "image1": ("IMAGE",),
                 "image2": ("IMAGE",),
                 "image3": ("IMAGE",),
+                "image4": ("IMAGE",),
                 "api_key": ("STRING", {"multiline": False,"default": "" }),
             },
         }
@@ -1047,7 +1055,7 @@ class Ai_doubao_seedream:
         result = result.permute(0, 2, 3, 1)
         return result
 
-    def generate_image(self, main_image, api_key, prompt, seed, model, max_images, auto_resize, image1=None, image2=None, image3=None):
+    def generate_image(self, main_image1, api_key, prompt, seed, model, max_images, auto_resize, image2=None, image3=None, image4=None):
         api_url = "https://ark.cn-beijing.volces.com/api/v3/images/generations"
         
         api_key = api_key.strip() if api_key.strip() else get_oubao_api_key()
@@ -1076,10 +1084,10 @@ class Ai_doubao_seedream:
         all_reference_images = []
         max_single_dim = 4096
         
-        main_image = self._process_image_channels(main_image)
-        if main_image is not None and main_image.nelement() > 0:
-            orig_h = main_image.shape[1]
-            orig_w = main_image.shape[2]
+        main_image1 = self._process_image_channels(main_image1)
+        if main_image1 is not None and main_image1.nelement() > 0:
+            orig_h = main_image1.shape[1]
+            orig_w = main_image1.shape[2]
             orig_total = orig_w * orig_h
             
             if orig_total < min_total_pixels:
@@ -1093,14 +1101,14 @@ class Ai_doubao_seedream:
                 target_w = min(orig_w, max_single_dim)
                 target_h = min(orig_h, max_single_dim)
             
-            main_image = self._auto_resize(main_image, target_h, target_w, auto_resize)
+            main_image1 = self._auto_resize(main_image1, target_h, target_w, auto_resize)
             payload['size'] = f"{target_w}x{target_h}"
             
-            main_base64 = encode_image_to_base64(main_image)
+            main_base64 = encode_image_to_base64(main_image1)
             if main_base64:
                 all_reference_images.append(main_base64)
 
-            optional_images = [image1, image2, image3]
+            optional_images = [image2, image3, image4]
             for img_tensor in optional_images:
                 if img_tensor is not None and img_tensor.nelement() > 0:
                     img_tensor = self._process_image_channels(img_tensor)
@@ -1173,11 +1181,6 @@ class Ai_doubao_seedream:
             
         final_batch = torch.cat(result_images, dim=0)
         return (final_batch,)
-
-
-
-
-
 
 
 
