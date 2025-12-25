@@ -483,6 +483,13 @@ def safe_load_torch_file(path, device="cpu"):
 class sum_load_adv:
     @classmethod
     def INPUT_TYPES(cls):
+        
+        available_ckpt = folder_paths.get_filename_list("checkpoints")
+        available_unets = list(set(folder_paths.get_filename_list("unet") + folder_paths.get_filename_list("unet_gguf")))
+        available_clips = list(set(folder_paths.get_filename_list("text_encoders") + folder_paths.get_filename_list("clip_gguf")))
+        available_vaes = folder_paths.get_filename_list("vae")
+        available_loras = folder_paths.get_filename_list("loras")
+
         return {
             "optional":{
                 "preset": (["None"] + preset_list, {"default": "ckpt-sd.toml"}),
@@ -688,6 +695,12 @@ class sum_load_adv:
 class sum_load_simple(sum_load_adv):
     @classmethod
     def INPUT_TYPES(cls):
+        # 动态获取模型列表
+        available_ckpt = folder_paths.get_filename_list("checkpoints")
+        available_unets = list(set(folder_paths.get_filename_list("unet") + folder_paths.get_filename_list("unet_gguf")))
+        available_clips = list(set(folder_paths.get_filename_list("text_encoders") + folder_paths.get_filename_list("clip_gguf")))
+        available_vaes = folder_paths.get_filename_list("vae")
+
         return {
             "optional":{
                 "ckpt_name": (["None"] + available_ckpt,),
@@ -1203,6 +1216,9 @@ class sum_latent:
 class sum_create_chx:
     @classmethod
     def INPUT_TYPES(cls):
+        # 动态获取模型列表
+        available_vaes = folder_paths.get_filename_list("vae")
+
         return {
             "required": {
                 "vae": (["None"] + available_vaes, ),
@@ -1214,13 +1230,13 @@ class sum_create_chx:
                 "sampler": (comfy.samplers.KSampler.SAMPLERS, ),
                 "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
                 "guidance": ("FLOAT", {"default": 3.5, "min": 0.0, "max": 100.0, "step": 0.1}),
-                "pos": ("STRING", {"multiline": True, "dynamicPrompts": True, "default": "a girl"}), 
+                "pos": ("STRING", {"multiline": True, "dynamicPrompts": True, "default": "a girl"}),
                 "neg": ("STRING", {"multiline": False, "dynamicPrompts": True, "default": " worst quality, low quality"}),
             },
-            
-            "optional": { 
+
+            "optional": {
                 "model": ("MODEL",),
-                "clip": ("CLIP",),  
+                "clip": ("CLIP",),
                 "over_vae": ("VAE",),
                 "over_positive": ("CONDITIONING",),
                 "over_negative": ("CONDITIONING",),
