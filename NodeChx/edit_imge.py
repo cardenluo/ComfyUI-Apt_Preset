@@ -1819,258 +1819,6 @@ class pre_ref_condition:
 
 
 
-class sum_stack_QwenEditPlus:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "context": ("RUN_CONTEXT",),
-            },
-            "optional": {
-                "model": ("MODEL", ),
-                "lora_stack": ("LORASTACK",),
-                "image1": ("IMAGE", ),
-                "image2": ("IMAGE", ),
-                "image3": ("IMAGE", ),
-                "union_controlnet": ("UNION_STACK",),
-                "vl_size": ("INT", {"default": 384, "min": 64, "max": 2048, "step": 64}),
-                "auto_resize": (["crop", "pad", "stretch"], {"default": "crop", }),
-                "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "system_prompt": ("STRING", {"multiline": False, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
-                "latent_image": ("IMAGE", ),
-                "latent_mask": ("MASK", ),
-            },
-            "hidden": {},
-        }
-    
-    RETURN_TYPES = ("RUN_CONTEXT", "MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "CLIP", "VAE")
-    RETURN_NAMES = ("context", "model", "positive", "negative", "latent", "clip", "vae")
-    FUNCTION = "QWENencode"
-    CATEGORY = "Apt_Preset/chx_tool"
-    DESCRIPTION = """
-    vl_size:视觉尺寸越大，提取的图像特征越丰富。
-    auto_resize: 缩放模式（crop=中心裁剪，pad=中心黑色填充，stretch=强制拉伸） 
-    system_prompt:系统提示词，用于指导图像特征描述与修改逻辑（默认提供基础配置） 
-    latent_image: 生成图尺寸。（没接入，按原始1024*1024算法） 
-    latent_mask: 生成图遮罩"""
-    
-    def _process_image_channels(self, image):
-        if image is None:
-            return None
-        if len(image.shape) == 4:
-            b, h, w, c = image.shape
-            if c == 4:
-                rgb = image[..., :3]
-                alpha = image[..., 3:4]
-                black_bg = torch.zeros_like(rgb)
-                image = rgb * alpha + black_bg * (1 - alpha)
-            elif c != 3:
-                image = image[..., :3]
-        elif len(image.shape) == 3:
-            h, w, c = image.shape
-            if c == 4:
-                rgb = image[..., :3]
-                alpha = image[..., 3:4]
-                black_bg = torch.zeros_like(rgb)
-                image = rgb * alpha + black_bg * (1 - alpha)
-            elif c != 3:
-                image = image[..., :3]
-        image = image.clamp(0.0, 1.0)
-        return image
-    
-    def QWENencode(self, context=None, prompt="", model=None, lora_stack=None, union_controlnet=None,
-                   image1=None, image2=None, image3=None, vl_size=384, latent_image=None, latent_mask=None,
-                   auto_resize="crop", union_stack=None, system_prompt=""):
-        if union_stack is not None and union_controlnet is None:
-            union_controlnet = union_stack
-        if model is None:
-            model = context.get("model", None)
-        if prompt == "":
-            prompt = context.get("pos", "")
-        clip = context.get("clip", None)
-        negative = context.get("negative", None)
-        vae = context.get("vae", None)
-        latent = context.get("latent", None)
-        
-        image1 = self._process_image_channels(image1)
-        image2 = self._process_image_channels(image2)
-        image3 = self._process_image_channels(image3)
-        images = [image1, image2, image3]
-        
-        images_vl = []
-        min_size = 64
-        for image in images:
-            if image is not None:
-                samples = image.movedim(-1, 1)
-                orig_h, orig_w = samples.shape[2], samples.shape[3]
-                total_pixels = vl_size * vl_size
-                orig_pixels = orig_h * orig_w
-                scale_by = math.sqrt(total_pixels / orig_pixels)
-                width = max(round(orig_w * scale_by), min_size)
-                height = max(round(orig_h * scale_by), min_size)
-                max_ratio = 10.0
-                if width / height > max_ratio:
-                    width = int(height * max_ratio)
-                elif height / width > max_ratio:
-                    height = int(width * max_ratio)
-                scaled_img = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
-                images_vl.append(scaled_img.movedim(1, -1))
-        
-        target_h, target_w = 1024, 1024
-        if latent_image is not None:
-            latent_image = self._process_image_channels(latent_image)
-            target_h, target_w = latent_image.shape[1], latent_image.shape[2]
-            for i in range(len(images)):
-                if images[i] is not None:
-                    if auto_resize == "stretch":
-                        images[i] = self.stretch_resize(images[i], target_h, target_w)
-                    else:
-                        images[i] = self.auto_resize(images[i], target_h, target_w, auto_resize)
-        
-        ref_latents = []
-        image_prompt = ""
-        for i, image in enumerate(images):
-            if image is not None:
-                image_prompt += f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>"
-                if vae is not None:
-                    samples = image.movedim(-1, 1)
-                    # 二次校验尺寸，强制≥64
-                    orig_sample_h = max(samples.shape[2], 64)
-                    orig_sample_w = max(samples.shape[3], 64)
-                    if samples.shape[2] != orig_sample_h or samples.shape[3] != orig_sample_w:
-                        samples = comfy.utils.common_upscale(samples, orig_sample_w, orig_sample_h, "bicubic", "disabled")
-                    # 计算8的倍数尺寸，强制≥64
-                    width = (orig_sample_w // 8) * 8
-                    height = (orig_sample_h // 8) * 8
-                    width = max(width, 64)
-                    height = max(height, 64)
-                    if width != orig_sample_w or height != orig_sample_h:
-                        samples = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
-                    ref_latents.append(vae.encode(samples.movedim(1, -1)))
-        
-        llama_template = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{{}}<|im_end|>\n<|im_start|>assistant\n"
-        full_prompt = image_prompt + prompt
-        tokens = clip.tokenize(full_prompt, images=images_vl, llama_template=llama_template)
-        conditioning = clip.encode_from_tokens_scheduled(tokens)
-        
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(
-                conditioning, {"reference_latents": ref_latents}, append=True
-            )
-        positive = conditioning
-        negative = self.zero_out_simple(positive)
-        
-        if union_controlnet is not None:
-            positive, negative = Apply_CN_union().apply_union_stack(
-                positive, negative, vae, union_controlnet, extra_concat=[]
-            )
-        
-        if latent_image is not None:
-            positive, negative, latent = self.addConditioning(positive, negative, latent_image, vae, latent_mask)
-        
-        context = new_context(context, clip=clip, positive=positive, negative=negative, model=model, latent=latent)
-        return (context, model, positive, negative, latent, clip, vae)
-    
-    def addConditioning(self, positive, negative, pixels, vae, mask=None):
-        pixels = self._process_image_channels(pixels)
-        h = (pixels.shape[1] // 8) * 8
-        w = (pixels.shape[2] // 8) * 8
-        orig_pixels = pixels
-        if pixels.shape[1] != h or pixels.shape[2] != w:
-            x_offset = (pixels.shape[1] - h) // 2
-            y_offset = (pixels.shape[2] - w) // 2
-            pixels = pixels[:, x_offset:x_offset + h, y_offset:y_offset + w, :]
-        
-        if mask is not None:
-            mask = torch.nn.functional.interpolate(
-                mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])),
-                size=(pixels.shape[1], pixels.shape[2]),
-                mode="bilinear"
-            )
-            m = (1.0 - mask.round()).squeeze(1)
-            for i in range(3):
-                pixels[:, :, :, i] = (pixels[:, :, :, i] - 0.5) * m + 0.5
-            concat_latent = vae.encode(pixels)
-            out_latent = {
-                "samples": vae.encode(orig_pixels),
-                "noise_mask": mask
-            }
-        else:
-            concat_latent = vae.encode(pixels)
-            out_latent = {"samples": concat_latent}
-        
-        out = []
-        for cond in [positive, negative]:
-            c = node_helpers.conditioning_set_values(cond, {"concat_latent_image": concat_latent})
-            if mask is not None:
-                c = node_helpers.conditioning_set_values(c, {"concat_mask": mask})
-            out.append(c)
-        return (out[0], out[1], out_latent)
-    
-    def auto_resize(self, image: torch.Tensor, target_h: int, target_w: int, auto_resize: str) -> torch.Tensor:
-        batch, orig_h, orig_w, ch = image.shape
-        target_h = max(target_h, 64)
-        target_w = max(target_w, 64)
-        orig_h = max(orig_h, 64)
-        orig_w = max(orig_w, 64)
-        
-        image_bchw = image.movedim(-1, 1)
-        
-        if auto_resize == "crop":
-            scale = max(target_w / orig_w, target_h / orig_h)
-            new_w = int(orig_w * scale)
-            new_h = int(orig_h * scale)
-            # 强制新尺寸≥目标尺寸，避免裁剪后不足
-            new_w = max(new_w, target_w)
-            new_h = max(new_h, target_h)
-            scaled = comfy.utils.common_upscale(image_bchw, new_w, new_h, "bicubic", "disabled")
-            x_offset = (new_w - target_w) // 2
-            y_offset = (new_h - target_h) // 2
-            # 裁剪后尺寸兜底，强制≥64
-            crop_h = min(target_h, new_h - y_offset)
-            crop_w = min(target_w, new_w - x_offset)
-            crop_h = max(crop_h, 64)
-            crop_w = max(crop_w, 64)
-            result = scaled[:, :, y_offset:y_offset + crop_h, x_offset:x_offset + crop_w]
-        elif auto_resize == "pad":
-            scale = min(target_w / orig_w, target_h / orig_h)
-            new_w = int(orig_w * scale)
-            new_h = int(orig_h * scale)
-            scaled = comfy.utils.common_upscale(image_bchw, new_w, new_h, "bicubic", "disabled")
-            black_bg = torch.zeros((batch, ch, target_h, target_w), dtype=image.dtype, device=image.device)
-            x_offset = (target_w - new_w) // 2
-            y_offset = (target_h - new_h) // 2
-            black_bg[:, :, y_offset:y_offset + new_h, x_offset:x_offset + new_w] = scaled
-            result = black_bg
-        
-        result_bhwc = result.movedim(1, -1)
-        return result_bhwc
-    
-    def stretch_resize(self, image: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
-        target_h = max(target_h, 64)
-        target_w = max(target_w, 64)
-        image_bchw = image.movedim(-1, 1)
-        scaled = comfy.utils.common_upscale(image_bchw, target_w, target_h, "bicubic", "disabled")
-        return scaled.movedim(1, -1)
-    
-    def zero_out_simple(self, conditioning):
-        if not conditioning:
-            return []
-        c = []
-        for t in conditioning:
-            d = t[1].copy()
-            pooled_output = d.get("pooled_output", None)
-            if pooled_output is not None:
-                d["pooled_output"] = torch.zeros_like(pooled_output)
-            conditioning_lyrics = d.get("conditioning_lyrics", None)
-            if conditioning_lyrics is not None:
-                d["conditioning_lyrics"] = torch.zeros_like(conditioning_lyrics)
-            n = [torch.zeros_like(t[0]), d]
-            c.append(n)
-        return c
-
-
-
 import node_helpers
 import comfy.utils
 import math
@@ -2339,6 +2087,277 @@ class Easy_QwenEdit2509:
 
 
 
+class sum_stack_QwenEditPlus:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "context": ("RUN_CONTEXT",),
+            },
+            "optional": {
+                "model": ("MODEL", ),
+                "lora_stack": ("LORASTACK",),
+                "image1": ("IMAGE", ),
+                "image2": ("IMAGE", ),
+                "image3": ("IMAGE", ),
+                "union_controlnet": ("UNION_STACK",),
+                "vl_size": ("INT", {"default": 384, "min": 64, "max": 2048, "step": 64}),
+                "auto_resize": (["crop", "pad", "stretch"], {"default": "crop", }),
+                "prompt": ("STRING", {"multiline": True, "default": ""}),
+                "system_prompt": ("STRING", {"multiline": False, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
+                "latent_image": ("IMAGE", ),
+                "latent_mask": ("MASK", ),
+            },
+            "hidden": {},
+        }
+    
+    RETURN_TYPES = ("RUN_CONTEXT", "MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "CLIP", "VAE")
+    RETURN_NAMES = ("context", "model", "positive", "negative", "latent", "clip", "vae")
+    FUNCTION = "QWENencode"
+    CATEGORY = "Apt_Preset/chx_tool"
+    DESCRIPTION = """
+    vl_size:视觉尺寸越大，提取的图像特征越丰富。
+    auto_resize: 缩放模式（crop=中心裁剪，pad=中心黑色填充，stretch=强制拉伸） 
+    system_prompt:系统提示词，用于指导图像特征描述与修改逻辑（默认提供基础配置） 
+    latent_image: 生成图尺寸。（已修复，匹配遮罩处理逻辑） 
+    latent_mask: 生成图遮罩（已修复边缘割裂问题）"""
+    
+    def _process_image_channels(self, image):
+        if image is None:
+            return None
+        if len(image.shape) == 4:
+            b, h, w, c = image.shape
+            if c == 4:
+                rgb = image[..., :3]
+                alpha = image[..., 3:4]
+                black_bg = torch.zeros_like(rgb)
+                image = rgb * alpha + black_bg * (1 - alpha)
+                image = image[..., :3]
+            elif c != 3:
+                image = image[..., :3]
+        elif len(image.shape) == 3:
+            h, w, c = image.shape
+            if c == 4:
+                rgb = image[..., :3]
+                alpha = image[..., 3:4]
+                black_bg = torch.zeros_like(rgb)
+                image = rgb * alpha + black_bg * (1 - alpha)
+                image = image[..., :3]
+            elif c != 3:
+                image = image[..., :3]
+        image = image.clamp(0.0, 1.0)
+        return image
+    
+    def QWENencode(self, context=None, prompt="", model=None, lora_stack=None, union_controlnet=None,
+                   image1=None, image2=None, image3=None, vl_size=384, latent_image=None, latent_mask=None,
+                   auto_resize="crop", union_stack=None, system_prompt=""):
+        if union_stack is not None and union_controlnet is None:
+            union_controlnet = union_stack
+        if model is None:
+            model = context.get("model", None)
+        if prompt == "":
+            prompt = context.get("pos", "")
+        clip = context.get("clip", None)
+        negative = context.get("negative", None)
+        vae = context.get("vae", None)
+        latent = context.get("latent", None)
+        
+        image1 = self._process_image_channels(image1)
+        image2 = self._process_image_channels(image2)
+        image3 = self._process_image_channels(image3)
+        images = [image1, image2, image3]
+        
+        # 获取目标尺寸（如果 latent_image 存在），用于后续所有尺寸适配
+        target_h, target_w = 1024, 1024
+        if latent_image is not None:
+            latent_image = self._process_image_channels(latent_image)
+            target_h, target_w = latent_image.shape[1], latent_image.shape[2]
+        
+        # 使用原始图像的副本生成 images_vl，避免修改 images 列表
+        images_vl = []
+        min_size = 64
+        for image in images:
+            if image is not None:
+                samples = image.movedim(-1, 1)
+                orig_h, orig_w = samples.shape[2], samples.shape[3]
+                total_pixels = vl_size * vl_size
+                orig_pixels = orig_h * orig_w
+                scale_by = math.sqrt(total_pixels / orig_pixels) if orig_pixels > 0 else 1.0
+                width = max(round(orig_w * scale_by), min_size)
+                height = max(round(orig_h * scale_by), min_size)
+                max_ratio = 10.0
+                if width / height > max_ratio:
+                    width = int(height * max_ratio)
+                elif height / width > max_ratio:
+                    height = int(width * max_ratio)
+                scaled_img = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
+                images_vl.append(scaled_img.movedim(1, -1))
+        
+        # 对 images 列表进行尺寸适配（用于编码 ref_latents）
+        for i in range(len(images)):
+            if images[i] is not None:
+                if auto_resize == "stretch":
+                    images[i] = self.stretch_resize(images[i], target_h, target_w)
+                else:
+                    images[i] = self.auto_resize(images[i], target_h, target_w, auto_resize)
+        
+        # 编码 ref_latents（此时 images 已经适配到目标尺寸）
+        ref_latents = []
+        image_prompt = ""
+        for i, image in enumerate(images):
+            if image is not None:
+                image_prompt += f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>"
+                if vae is not None:
+                    samples = image.movedim(-1, 1)
+                    # 二次校验尺寸，强制≥64
+                    orig_sample_h = max(samples.shape[2], 64)
+                    orig_sample_w = max(samples.shape[3], 64)
+                    if samples.shape[2] != orig_sample_h or samples.shape[3] != orig_sample_w:
+                        samples = comfy.utils.common_upscale(samples, orig_sample_w, orig_sample_h, "bicubic", "disabled")
+                    # 计算8的倍数尺寸，强制≥64
+                    width = (orig_sample_w // 8) * 8
+                    height = (orig_sample_h // 8) * 8
+                    width = max(width, 64)
+                    height = max(height, 64)
+                    if width != orig_sample_w or height != orig_sample_h:
+                        samples = comfy.utils.common_upscale(samples, width, height, "bicubic", "disabled")
+                    ref_latents.append(vae.encode(samples.movedim(1, -1)))
+        
+        llama_template = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{{}}<|im_end|>\n<|im_start|>assistant\n"
+        full_prompt = image_prompt + prompt
+        tokens = clip.tokenize(full_prompt, images=images_vl, llama_template=llama_template)
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        
+        if len(ref_latents) > 0:
+            conditioning = node_helpers.conditioning_set_values(
+                conditioning, {"reference_latents": ref_latents}, append=True
+            )
+        positive = conditioning
+        negative = self.zero_out_simple(positive)
+        
+        if union_controlnet is not None:
+            positive, negative = Apply_CN_union().apply_union_stack(
+                positive, negative, vae, union_controlnet, extra_concat=[]
+            )
+        
+        if latent_image is not None:
+            positive, negative, latent = self.addConditioning(positive, negative, latent_image, vae, latent_mask)
+        
+        context = new_context(context, clip=clip, positive=positive, negative=negative, model=model, latent=latent)
+        return (context, model, positive, negative, latent, clip, vae)
+    
+    def addConditioning(self, positive, negative, pixels, vae, mask=None):
+        # 1. 统一处理像素通道（和Easy_QwenEdit2509保持一致）
+        pixels = self._process_image_channels(pixels)
+        orig_pixels = pixels.clone()
+        
+        # 2. 先计算8的倍数尺寸并裁剪像素（关键修复：先处理像素再处理mask）
+        x = (pixels.shape[1] // 8) * 8
+        y = (pixels.shape[2] // 8) * 8
+        
+        if pixels.shape[1] != x or pixels.shape[2] != y:
+            x_offset = (pixels.shape[1] - x) // 2
+            y_offset = (pixels.shape[2] - y) // 2
+            pixels = pixels[:, x_offset:x + x_offset, y_offset:y + y_offset, :]
+        
+        # 3. 处理mask（关键修复：匹配裁剪后的像素尺寸）
+        if mask is not None:
+            # 调整mask尺寸到裁剪后的像素尺寸
+            mask = torch.nn.functional.interpolate(
+                mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])),
+                size=(pixels.shape[1], pixels.shape[2]),  # 匹配裁剪后的尺寸
+                mode="bilinear",
+                align_corners=False  # 关键：添加align_corners=False避免边缘锯齿
+            )
+            # 使用和Easy_QwenEdit2509完全相同的混合公式
+            m = (1.0 - mask.round()).squeeze(1)
+            for i in range(3):
+                pixels[:, :, :, i] = pixels[:, :, :, i] * m + 0.5 * (1 - m)
+            
+            # 数值范围保护（关键修复）
+            pixels = pixels.clamp(0.0, 1.0)
+            
+            concat_latent = vae.encode(pixels)
+            out_latent = {
+                "samples": vae.encode(self._process_image_channels(orig_pixels)),
+                "noise_mask": mask
+            }
+        else:
+            concat_latent = vae.encode(pixels)
+            out_latent = {"samples": concat_latent}
+        
+        # 4. 设置conditioning（保持逻辑不变）
+        out = []
+        for cond in [positive, negative]:
+            c = node_helpers.conditioning_set_values(cond, {"concat_latent_image": concat_latent})
+            if mask is not None:
+                c = node_helpers.conditioning_set_values(c, {"concat_mask": mask})
+            out.append(c)
+        
+        return (out[0], out[1], out_latent)
+    
+    def auto_resize(self, image: torch.Tensor, target_h: int, target_w: int, auto_resize: str) -> torch.Tensor:
+        batch, orig_h, orig_w, ch = image.shape
+        target_h = max(target_h, 64)
+        target_w = max(target_w, 64)
+        orig_h = max(orig_h, 64)
+        orig_w = max(orig_w, 64)
+        
+        image_bchw = image.movedim(-1, 1)
+        
+        if auto_resize == "crop":
+            scale = max(target_w / orig_w, target_h / orig_h)
+            new_w = int(orig_w * scale)
+            new_h = int(orig_h * scale)
+            new_w = max(new_w, target_w)
+            new_h = max(new_h, target_h)
+            scaled = comfy.utils.common_upscale(image_bchw, new_w, new_h, "bicubic", "disabled")
+            x_offset = (new_w - target_w) // 2
+            y_offset = (new_h - target_h) // 2
+            crop_h = min(target_h, new_h - y_offset)
+            crop_w = min(target_w, new_w - x_offset)
+            crop_h = max(crop_h, 64)
+            crop_w = max(crop_w, 64)
+            result = scaled[:, :, y_offset:y_offset + crop_h, x_offset:x_offset + crop_w]
+        elif auto_resize == "pad":
+            scale = min(target_w / orig_w, target_h / orig_h)
+            new_w = int(orig_w * scale)
+            new_h = int(orig_h * scale)
+            scaled = comfy.utils.common_upscale(image_bchw, new_w, new_h, "bicubic", "disabled")
+            black_bg = torch.zeros((batch, ch, target_h, target_w), dtype=image.dtype, device=image.device)
+            x_offset = (target_w - new_w) // 2
+            y_offset = (target_h - new_h) // 2
+            black_bg[:, :, y_offset:y_offset + new_h, x_offset:x_offset + new_w] = scaled
+            result = black_bg
+        else:
+            # 默认使用stretch
+            result = comfy.utils.common_upscale(image_bchw, target_w, target_h, "bicubic", "disabled")
+        
+        result_bhwc = result.movedim(1, -1)
+        return result_bhwc
+    
+    def stretch_resize(self, image: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
+        target_h = max(target_h, 64)
+        target_w = max(target_w, 64)
+        image_bchw = image.movedim(-1, 1)
+        scaled = comfy.utils.common_upscale(image_bchw, target_w, target_h, "bicubic", "disabled")
+        return scaled.movedim(1, -1)
+    
+    def zero_out_simple(self, conditioning):
+        if not conditioning:
+            return []
+        c = []
+        for t in conditioning:
+            d = t[1].copy()
+            pooled_output = d.get("pooled_output", None)
+            if pooled_output is not None:
+                d["pooled_output"] = torch.zeros_like(pooled_output)
+            conditioning_lyrics = d.get("conditioning_lyrics", None)
+            if conditioning_lyrics is not None:
+                d["conditioning_lyrics"] = torch.zeros_like(conditioning_lyrics)
+            n = [torch.zeros_like(t[0]), d]
+            c.append(n)
+        return c
 
 
 
