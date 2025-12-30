@@ -467,7 +467,7 @@ NODE_CLASS_MAPPINGS= {
 
 
 "lay_images_free_layout":lay_images_free_layout,
-#"lay_image_XYgrid": lay_image_XYgrid,
+"lay_image_XYgrid": lay_image_XYgrid,
 "lay_image_grid_note": lay_image_grid_note,
 "lay_mul_image":lay_mul_image,
 "lay_ImageGrid": lay_ImageGrid,
@@ -652,7 +652,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 "pre_qwen_controlnet": "pre_qwenModelPatch_CN"
   
 }
-
 
 
 
