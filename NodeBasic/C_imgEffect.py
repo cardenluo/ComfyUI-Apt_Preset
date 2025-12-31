@@ -2963,11 +2963,30 @@ import math
 from itertools import repeat
 from typing import Iterable
 import re
-import skia
+
 from comfy_api.latest import io
-from skia import textlayout as tl
 import torch
 import numpy as np
+
+
+try:
+    import skia
+    REMOVER_AVAILABLE = True  
+except ImportError:
+    skia = None
+    REMOVER_AVAILABLE = False  
+
+try:
+    from skia import textlayout as tl
+    REMOVER_AVAILABLE = True  
+except ImportError:
+    tl = None
+    REMOVER_AVAILABLE = False  
+
+
+
+
+
 
 def tensor_to_skia_image(img: torch.tensor) -> skia.Image:
     if img.ndim == 4:
