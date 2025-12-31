@@ -41,7 +41,8 @@ python-docx
 dashscope
 asteval
 toolz
-skia
+skia-python
+
 
 
 
