@@ -32,8 +32,11 @@ from ..office_unit import ImageUpscaleWithModel,UpscaleModelLoader
 
 try:
     import pynvml
-    pynvml_installed = True
-    pynvml.nvmlInit()
+    try: 
+        pynvml.nvmlInit()
+        pynvml_installed = True
+    except: 
+        pynvml_installed = False
 except ImportError:
     pynvml_installed = False
     print("警告：未安装pynvml库，auto选项将不可用。")
