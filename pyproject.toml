@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-Apt_Preset"
 description = "ComfyUI Preset Manager, supporting various preset templates and workflow management"
-version = "8.4.7"
+version = "8.4.8"
 license = { file = "LICENSE.txt" }
 
 [project.urls]
@@ -19,6 +19,7 @@ Nodes = [
     "packdata.py",
     "stack.py"
 ]
+
 
 
 
