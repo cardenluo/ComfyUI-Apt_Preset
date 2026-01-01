@@ -2153,16 +2153,23 @@ class sum_stack_QwenEditPlus:
     def QWENencode(self, context=None, prompt="", model=None, lora_stack=None, union_controlnet=None,
                    image1=None, image2=None, image3=None, vl_size=384, latent_image=None, latent_mask=None,
                    auto_resize="crop", union_stack=None, system_prompt=""):
-        if union_stack is not None and union_controlnet is None:
-            union_controlnet = union_stack
-        if model is None:
-            model = context.get("model", None)
-        if prompt == "":
-            prompt = context.get("pos", "")
+        
         clip = context.get("clip", None)
         negative = context.get("negative", None)
         vae = context.get("vae", None)
         latent = context.get("latent", None)
+        
+        if union_stack is not None and union_controlnet is None:
+            union_controlnet = union_stack
+        if model is None:
+            model = context.get("model", None)
+
+        if lora_stack is not None:
+            model, clip = Apply_LoRAStack().apply_lora_stack(model, clip, lora_stack)
+
+        if prompt == "":
+            prompt = context.get("pos", "")
+
         
         image1 = self._process_image_channels(image1)
         image2 = self._process_image_channels(image2)
