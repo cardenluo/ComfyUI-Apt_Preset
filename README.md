@@ -30,6 +30,9 @@ The current workflow connections are becoming increasingly dense, making them di
 2025.12.4 fix sum_load  support z-image-gguf   
           add new Coordinate series nodes  Coordinate_SplitIndex,Coordinate_Generator,Coordinate_fromImage,Coordinate_MarkRender,Coordinate_fromMask,Coordinate_pointCombine,
 
+
+2025.1.5  Update sum_stack_QwenEditPlus to increase the control intensity of reference images. Optimize sum_load_adv by adding a caching mechanism and nodes for clearing the cache. It is no longer mandatory to adjust in the upper area of sum_edit; parameters other than the model can be modified quickly on the loader.
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
