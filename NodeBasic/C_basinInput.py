@@ -186,15 +186,24 @@ class basicIn_int:
             return (None,)
 
 
+class basicIn_Boolean:
+    CATEGORY = "Apt_Preset/IO_Port"
+    INPUT_TYPES = lambda: {
+        "required": {
+            "boolean_value": ("BOOLEAN", {
+                "default": False,
+                "label_on": "True",
+                "label_off": "False"
+            })
+        }
+    }
+    RETURN_TYPES = ("BOOLEAN", "BOOLEAN")
+    RETURN_NAMES = ("BOOL", "INVERTED_BOOL")
+    FUNCTION = "get_boolean"
 
-
-
-
-
-
-
-
-
+    def get_boolean(self, boolean_value):
+        inverted_value = not boolean_value
+        return (boolean_value, inverted_value)
 
 
 
