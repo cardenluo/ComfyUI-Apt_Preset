@@ -69,46 +69,6 @@ class AlwaysTuple(tuple):
         else:
             return AlwaysEqual(super().__getitem__(-1))
 
-class flow_judge:
- 
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "judge": ("BOOLEAN", {"default": True}),
-            },
-            "optional": {
-                "true": (AlwaysEqual("*"), {"lazy": True}),
-                "false": (AlwaysEqual("*"), {"lazy": True}),
-            }
-        }
-
-    RETURN_TYPES = (AlwaysEqual("*"),)
-    RETURN_NAMES = ("data",)
-    FUNCTION = "judge_bool"
-    CATEGORY = "Apt_Preset/flow"
-    OUTPUT_NODE = False
-
-    def check_lazy_status(self, judge, true=None, false=None):
-        needed = []
-        if judge:
-            if true is not None:
-                needed.append('true')
-        else:
-            if false is not None:
-                needed.append('false')
-        return needed
-
-    def judge_bool(self, judge, true=None, false=None):
-   
-        if judge:
-            result_value = true if true is not None else false
-        else:
-            result_value = false if false is not None else true
-            
-        return {"ui": {"value": [True if judge else False]}, "result": (result_value,)}
-
-
 
 class flow_auto_pixel:
     upscale_methods = ["bicubic","nearest-exact", "bilinear", "area",  "lanczos"]
@@ -251,76 +211,6 @@ class flow_low_gpu:
             model_management.EXTRA_RESERVED_VRAM = int(reserved * 1024 * 1024 * 1024)
 
         return (anything,)
-
-
-
-
-class flow_switch:
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "input_method": ("BOOLEAN", {"default": True, "label_on": "第一个有效值", "label_off": "按编号"}),
-                "input_index": ("INT", {"default": 1, "min": 1, "max": 5, "step": 1}),
-                "output_method": ("BOOLEAN", {"default": True, "label_on": "按有效输入", "label_off": "按匹配编号"}),
-            },
-            "optional": {
-                "in1": (any_type,),
-                "in2": (any_type,),
-                "in3": (any_type,),
-                "in4": (any_type,),
-                "in5": (any_type,),
-            }
-        }
-
-    RETURN_TYPES = (any_type, any_type, any_type, any_type, any_type,)
-    RETURN_NAMES = ('out1', 'out2', 'out3', 'out4', 'out5',)
-    CATEGORY = "Apt_Preset/flow"
-    FUNCTION = "switch"
-
-    DESCRIPTION = """
-    - input_method: 自动检测并选择第一个非空输入数据（第一个有效值）或手动选择输入端口索引（按编号）
-    - input_index: 手动选择输入端口索引（1-5），在"按编号"模式下生效
-    - output_method: 为真时按选中值输出（所有输出口相同，按有效输入），为假时按输入输出1对1匹配（按匹配编号）
-    """
-
-    def switch(self, input_method, input_index, output_method,
-               in1=None, in2=None, in3=None, in4=None, in5=None):
-        inputs = [in1, in2, in3, in4, in5]
-        
-        if input_method:
-            selected_value = None
-            for value in inputs:
-                if not self.is_none(value):
-                    selected_value = value
-                    break
-        else:
-            index = input_index - 1
-            if 0 <= index < len(inputs):
-                selected_value = inputs[index]
-            else:
-                selected_value = None
-        
-        # 如果selected_value为None（没有找到有效值），则使用inputs中的第一个非None值
-        if selected_value is None:
-            for value in inputs:
-                if value is not None:
-                    selected_value = value
-                    break
-        
-        if output_method:
-            output = [selected_value] * 5
-        else:
-            output = inputs.copy()
-        
-        return tuple(output)
-
-    def is_none(self, value):
-        if value is not None:
-            if isinstance(value, dict) and 'model' in value and 'clip' in value:
-                return all(v is None for v in value.values())
-        return value is None
 
 
 
@@ -870,6 +760,233 @@ class flow_bridge_image:
             except Exception as e:
                 print(f"Failed to load image from local file: {e}")
         return None
+
+
+
+
+
+
+class flow_BooleanSwitch:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "any_input": (any_type,),
+                "switch": ("BOOLEAN", {"default": True, "label_on": "On", "label_off": "Off"}),
+            }
+        }
+
+    RETURN_TYPES = (any_type,)
+    RETURN_NAMES = ("any_output",)
+    FUNCTION = "process"
+    CATEGORY = "Apt_Preset/flow"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types):
+        return True
+
+    def process(self, switch, any_input=None):
+        if switch:
+            return (any_input,)
+        else:
+            if ExecutionBlocker is not None:
+                return (ExecutionBlocker(None),)
+            else:
+                return ({},)
+
+
+
+
+class flow_judge_output:
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "data": (any_type, {}),
+                "judge": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = (any_type, any_type)
+    RETURN_NAMES = ("true", "false")
+    FUNCTION = "judge_output"
+    CATEGORY = "Apt_Preset/flow"
+    OUTPUT_NODE = False
+
+    def judge_output(self, data, judge=True):
+        # 根据judge布尔值判断输出端口
+        if judge:
+            true_output = data
+            false_output = ExecutionBlocker(None) if ExecutionBlocker is not None else {}
+        else:
+            true_output = ExecutionBlocker(None) if ExecutionBlocker is not None else {}
+            false_output = data
+            
+        return {"ui": {"value": [judge]}, "result": (true_output, false_output)}
+
+
+
+
+class flow_judge_input:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "judge": ("BOOLEAN", {"default": True, "label_on": "True", "label_off": "False"}),
+            },
+            "optional": {
+                "true": (any_type, {"lazy": True}),
+                "false": (any_type, {"lazy": True}),
+            }
+        }
+
+    RETURN_TYPES = (any_type,)
+    RETURN_NAMES = ("data",)
+    FUNCTION = "judge_bool"
+    CATEGORY = "Apt_Preset/flow"
+    OUTPUT_NODE = False
+
+    def check_lazy_status(self, judge, **kwargs):
+        needed = []
+        if judge:
+            needed.append('true')
+        else:
+            needed.append('false')
+        return needed
+
+    def judge_bool(self, judge, true=None, false=None):
+        if judge:
+            branch_name = "true"
+            result_value = true
+        else:
+            branch_name = "false"
+            result_value = false
+        
+        if result_value is None:
+            fallback_value = false if judge else true
+            if fallback_value is not None:
+                result_value = fallback_value
+                branch_name = f"{branch_name} (fallback to {'false' if judge else 'true'})"
+            else:
+                raise ValueError(
+                    f"Boolean judgment node error:\n"
+                    f"Currently selected {branch_name} branch, but no data input in this branch, and the other branch is also empty!\n"
+                    f"Please ensure at least one branch is connected with valid data."
+                )
+        
+        return {
+            "ui": {
+                "judge_status": [judge],
+                "used_branch": [branch_name]
+            },
+            "result": (result_value,)
+        }
+
+
+
+
+class flow_switch_output:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "any_input": (any_type, {}),
+                "index": ("INT", {"default": 1, "min": 1, "max": 5, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = (any_type, any_type, any_type, any_type, any_type)
+    RETURN_NAMES = ("output_1", "output_2", "output_3", "output_4", "output_5")
+    FUNCTION = "switch_output"
+    CATEGORY = "Apt_Preset/flow"
+    OUTPUT_NODE = False
+
+    def switch_output(self, any_input, index=1):
+        outputs = []
+        for i in range(5):
+            if i == index - 1:  
+                outputs.append(any_input)
+            else: 
+                if ExecutionBlocker is not None:
+                    outputs.append(ExecutionBlocker(None))
+                else:
+                    outputs.append({})
+        
+        return tuple(outputs)
+
+
+
+
+
+class flow_switch_input:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input_method": ("BOOLEAN", {"default": True, "label_on": "第一个有效值", "label_off": "按编号"}),
+                "input_index": ("INT", {"default": 1, "min": 1, "max": 5, "step": 1}),
+            },
+            "optional": {
+                "in1": (any_type,),
+                "in2": (any_type,),
+                "in3": (any_type,),
+                "in4": (any_type,),
+                "in5": (any_type,),
+            }
+        }
+
+    RETURN_TYPES = (any_type,)
+    RETURN_NAMES = ('out',)
+    CATEGORY = "Apt_Preset/flow"
+    FUNCTION = "switch"
+
+    def switch(self, input_method, input_index,
+               in1=None, in2=None, in3=None, in4=None, in5=None):
+        inputs = [in1, in2, in3, in4, in5]
+        
+        if input_method:
+            selected_value = None
+            for value in inputs:
+                if not self.is_none(value):
+                    selected_value = value
+                    break
+        else:
+            index = input_index - 1
+            if 0 <= index < len(inputs):
+                selected_value = inputs[index]
+            else:
+                selected_value = None
+        
+        if selected_value is None:
+            for value in inputs:
+                if value is not None:
+                    selected_value = value
+                    break
+    
+        if selected_value is None:
+            if ExecutionBlocker is not None:
+                return (ExecutionBlocker(None),)
+            else:
+                return ({},)
+        
+        return (selected_value,)
+
+    def is_none(self, value):
+        if value is not None:
+            if isinstance(value, dict) and 'model' in value and 'clip' in value:
+                return all(v is None for v in value.values())
+        return value is None
+
+
+
+
+
+
+
+
+
 
 
 
