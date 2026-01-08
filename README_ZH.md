@@ -28,6 +28,8 @@
 增加坐标系列节点 Coordinate_SplitIndex,Coordinate_Generator,Coordinate_fromImage,Coordinate_MarkRender,Coordinate_fromMask,Coordinate_pointCombine,
 
 2025.1.5  更新sum_stack_QwenEditPlus增加参考图的控制强度。优化sum_load_adv增加缓存机制和清理缓存的节点。不再强制要求在sum_edit上调节，除模型之外的参数在加载器上修改速度也很快。
+
+2025.1.8  更新流程组节点
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
