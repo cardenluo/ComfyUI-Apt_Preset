@@ -304,8 +304,7 @@ NODE_CLASS_MAPPINGS= {
 "basicIn_Scheduler": basicIn_Scheduler,
 "basicIn_Sampler": basicIn_Sampler,
 "basicIn_Seed": basicIn_Seed,
-
-
+"basicIn_Boolean": basicIn_Boolean,
 
 
 #-------------data-------------------
@@ -550,20 +549,25 @@ NODE_CLASS_MAPPINGS= {
 
 #------------------------流程相关-------------------------
 
+"flow_judge_output":flow_judge_output,
+"flow_judge_input":flow_judge_input,
+"flow_switch_input":flow_switch_input,
+"flow_switch_output":flow_switch_output,
+"flow_BooleanSwitch":flow_BooleanSwitch,
 
-"flow_judge":flow_judge,
 "flow_bridge_image":flow_bridge_image,
-"flow_auto_pixel":flow_auto_pixel, 
-"flow_switch":flow_switch,
+
+
 "flow_low_gpu":flow_low_gpu,
 "flow_case_tentor":flow_case_tentor,
 "flow_QueueTrigger":flow_QueueTrigger,
+
 "flow_ValueSender":flow_ValueSender,
 "flow_ValueReceiver":flow_ValueReceiver,
+
 "flow_sch_control":flow_sch_control,
 "flow_tensor_Unify":flow_tensor_Unify,
-
-
+"flow_auto_pixel":flow_auto_pixel, 
 
 #----------------------外部导入节点-----------------------
 
