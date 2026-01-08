@@ -33,6 +33,9 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.1.5  Update sum_stack_QwenEditPlus to increase the control intensity of reference images. Optimize sum_load_adv by adding a caching mechanism and nodes for clearing the cache. It is no longer mandatory to adjust in the upper area of sum_edit; parameters other than the model can be modified quickly on the loader.
 
+2025.1.8   update flow team nodes 
+
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
