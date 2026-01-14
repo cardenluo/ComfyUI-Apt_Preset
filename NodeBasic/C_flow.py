@@ -214,6 +214,8 @@ class flow_auto_pixel:
 
 
 
+
+
 class flow_case_tentor:
     @classmethod
     def INPUT_TYPES(cls):
@@ -239,9 +241,9 @@ class flow_case_tentor:
                      "张量数量>批次阈值,为True",
                      "张量数量=批次阈值,为True",
                      ], ),  
-
-                "area_threshold": ("INT", {"default": 1048576, "min": 1, "max": 9999999999, "step": 1}),
-                "ratio_threshold": ("FLOAT", {"default": 1.0, "min": 0.0001, "max": 10000.0, "step": 0.001}),
+                # 修改为单行文本输入，支持四则运算表达式
+                "area_threshold": ("STRING", {"default": "1048576.0", "tooltip": "支持加减乘除四则运算表达式，例如:1024*1024、(2000+500)/2"}),
+                "ratio_threshold": ("STRING", {"default": "1.0", "tooltip": "支持加减乘除四则运算表达式，例如:16/9、4/3+0.2"}),
                 "edge_threshold": ("INT", {"default": 1024, "min": 1, "max": 99999, "step": 1}),
                 "batch_threshold": ("INT", {"default": 1, "min": 1, "max": 9999, "step": 1, "tooltip": "遮罩或图片或latent，批次数量"}),
 
@@ -255,10 +257,28 @@ class flow_case_tentor:
     RETURN_NAMES = ("boolean",)
     FUNCTION = "check_event"
     CATEGORY = "Apt_Preset/flow"
+
+    # 新增：安全解析表达式并返回float的核心方法
+    def safe_calc_float(self, expr_str):
+        if not expr_str or expr_str.strip() == "":
+            return 0.0
+        # 只保留 数字/+-*/().  过滤所有非法字符，保证安全执行
+        safe_expr = ''.join([c for c in expr_str.strip() if c in '0123456789+-*/().'])
+        try:
+            # 执行表达式计算并强转float
+            result = float(eval(safe_expr))
+            return result if result >= 0 else 0.0
+        except:
+            # 表达式解析失败/计算报错，返回默认值
+            return 0.0
     
     def check_event(self, case_judge, area_threshold,  batch_threshold, ratio_threshold, edge_threshold, data=None) -> Tuple[bool]:
         if data is None:
             raise ValueError("必须输入data参数")
+        
+        # 核心修改：解析文本表达式为float数值
+        area_threshold_val = self.safe_calc_float(area_threshold)
+        ratio_threshold_val = self.safe_calc_float(ratio_threshold)
             
         if case_judge == "横向图：宽>高，为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
@@ -283,14 +303,14 @@ class flow_case_tentor:
                 raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
             height, width = data.shape[1], data.shape[2]
             resolution = width * height
-            result = resolution > area_threshold
+            result = resolution > area_threshold_val
         
         elif case_judge == "分辨率=面积阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
                 raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
             height, width = data.shape[1], data.shape[2]
             resolution = width * height
-            result = resolution == area_threshold
+            result = resolution == area_threshold_val
         
         elif case_judge == "宽高比>比例阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
@@ -299,7 +319,7 @@ class flow_case_tentor:
             if height == 0:
                 raise ValueError(f"模式 '{case_judge}' 图像高度不能为0")
             aspect_ratio = width / height
-            result = aspect_ratio > ratio_threshold
+            result = aspect_ratio > ratio_threshold_val
         
         elif case_judge == "宽高比=比例阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
@@ -308,7 +328,7 @@ class flow_case_tentor:
             if height == 0:
                 raise ValueError(f"模式 '{case_judge}' 图像高度不能为0")
             aspect_ratio = width / height
-            result = aspect_ratio == ratio_threshold
+            result = aspect_ratio == ratio_threshold_val
         
         elif case_judge == "长边>边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
@@ -384,8 +404,6 @@ class flow_case_tentor:
             raise ValueError(f"不支持的判断模式: {case_judge}")
         
         return (result,)
-
-
 
 
 
