@@ -228,7 +228,7 @@ class flow_case_tentor:
                      "分辨率>面积阈值,为True", 
                      "分辨率=面积阈值,为True",                     
                      "宽高比>比例阈值,为True", 
-                     "宽高比=比例阈值,为True", 
+                     "宽高比=比例阈值,为True",
                      "长边>边阈值,为True",
                      "长边=边阈值,为True",
                      "短边>边阈值,为True",
@@ -241,7 +241,6 @@ class flow_case_tentor:
                      "张量数量>批次阈值,为True",
                      "张量数量=批次阈值,为True",
                      ], ),  
-                # 修改为单行文本输入，支持四则运算表达式
                 "area_threshold": ("STRING", {"default": "1048576.0", "tooltip": "支持加减乘除四则运算表达式，例如:1024*1024、(2000+500)/2"}),
                 "ratio_threshold": ("STRING", {"default": "1.0", "tooltip": "支持加减乘除四则运算表达式，例如:16/9、4/3+0.2"}),
                 "edge_threshold": ("INT", {"default": 1024, "min": 1, "max": 99999, "step": 1}),
@@ -273,8 +272,9 @@ class flow_case_tentor:
             return 0.0
     
     def check_event(self, case_judge, area_threshold,  batch_threshold, ratio_threshold, edge_threshold, data=None) -> Tuple[bool]:
+        # ========== 核心修复1：空data(空图片) 直接返回 False，取消抛异常 ==========
         if data is None:
-            raise ValueError("必须输入data参数")
+            return (False,)
         
         # 核心修改：解析文本表达式为float数值
         area_threshold_val = self.safe_calc_float(area_threshold)
@@ -282,128 +282,150 @@ class flow_case_tentor:
             
         if case_judge == "横向图：宽>高，为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            result = width > height
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                result = width > height
         
         elif case_judge == "竖向图：高>宽，为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            result = height > width
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                result = height > width
         
         elif case_judge == "正方图：宽=高，为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            result = width == height
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                result = width == height
         
         elif case_judge == "分辨率>面积阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            resolution = width * height
-            result = resolution > area_threshold_val
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                resolution = width * height
+                result = resolution > area_threshold_val
         
         elif case_judge == "分辨率=面积阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            resolution = width * height
-            result = resolution == area_threshold_val
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                resolution = width * height
+                result = resolution == area_threshold_val
         
         elif case_judge == "宽高比>比例阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            if height == 0:
-                raise ValueError(f"模式 '{case_judge}' 图像高度不能为0")
-            aspect_ratio = width / height
-            result = aspect_ratio > ratio_threshold_val
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                if height == 0:
+                    result = False
+                else:
+                    aspect_ratio = width / height
+                    result = aspect_ratio > ratio_threshold_val
         
         elif case_judge == "宽高比=比例阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            if height == 0:
-                raise ValueError(f"模式 '{case_judge}' 图像高度不能为0")
-            aspect_ratio = width / height
-            result = aspect_ratio == ratio_threshold_val
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                if height == 0:
+                    result = False
+                else:
+                    aspect_ratio = width / height
+                    result = aspect_ratio == ratio_threshold_val
         
         elif case_judge == "长边>边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            long_side = max(width, height)
-            result = long_side > edge_threshold
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                long_side = max(width, height)
+                result = long_side > edge_threshold
         
         elif case_judge == "长边=边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            long_side = max(width, height)
-            result = long_side == edge_threshold
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                long_side = max(width, height)
+                result = long_side == edge_threshold
         
         elif case_judge == "短边>边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            short_side = min(width, height)
-            result = short_side > edge_threshold
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                short_side = min(width, height)
+                result = short_side > edge_threshold
         
         elif case_judge == "短边=边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height, width = data.shape[1], data.shape[2]
-            short_side = min(width, height)
-            result = short_side == edge_threshold
+                result = False
+            else:
+                height, width = data.shape[1], data.shape[2]
+                short_side = min(width, height)
+                result = short_side == edge_threshold
         
         elif case_judge == "高度>边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height = data.shape[1]
-            result = height > edge_threshold
+                result = False
+            else:
+                height = data.shape[1]
+                result = height > edge_threshold
         
         elif case_judge == "高度=边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            height = data.shape[1]
-            result = height == edge_threshold
+                result = False
+            else:
+                height = data.shape[1]
+                result = height == edge_threshold
         
         elif case_judge == "宽度>边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            width = data.shape[2]
-            result = width > edge_threshold
+                result = False
+            else:
+                width = data.shape[2]
+                result = width > edge_threshold
         
         elif case_judge == "宽度=边阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像类型数据")
-            width = data.shape[2]
-            result = width == edge_threshold
+                result = False
+            else:
+                width = data.shape[2]
+                result = width == edge_threshold
         
         elif case_judge == "张量存在,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) in [3, 4]):
-                raise ValueError(f"模式 '{case_judge}' 必须输入遮罩、图像、latent类型数据")
-            mask_sum = torch.sum(data).item()  
-            result = mask_sum > 0  
+                result = False
+            else:
+                mask_sum = torch.sum(data).item()  
+                result = mask_sum > 0  
         
         elif case_judge == "张量数量>批次阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) in [3, 4]):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像或遮罩类型数据（3/4维张量）")
-            batch_size = data.shape[0]  
-            result = batch_size > batch_threshold
+                result = False
+            else:
+                batch_size = data.shape[0]  
+                result = batch_size > batch_threshold
         
         elif case_judge == "张量数量=批次阈值,为True":
             if not (isinstance(data, torch.Tensor) and len(data.shape) in [3, 4]):
-                raise ValueError(f"模式 '{case_judge}' 必须输入图像或遮罩类型数据（3/4维张量）")
-            batch_size = data.shape[0]  
-            result = batch_size == batch_threshold
+                result = False
+            else:
+                batch_size = data.shape[0]  
+                result = batch_size == batch_threshold
         
         else:
-            raise ValueError(f"不支持的判断模式: {case_judge}")
+            # ========== 核心修复2：未知判断模式 也返回 False，取消抛异常 ==========
+            result = False
         
         return (result,)
+
 
 
 
@@ -669,6 +691,27 @@ except ImportError:
             self.value = value
 
 
+import torch
+import numpy as np
+from PIL import Image, PngImagePlugin
+import os
+import folder_paths
+import uuid
+import json
+
+lazy_options = {
+    "lazy": True
+}
+
+ExecutionBlocker = None
+try:
+    from comfy_execution.graph import ExecutionBlocker
+except ImportError:
+    class ExecutionBlocker:
+        def __init__(self, value):
+            self.value = value
+
+
 class flow_bridge_image:
     OUTPUT_NODE = True
 
@@ -687,7 +730,6 @@ class flow_bridge_image:
             "required": {
                 "disable_input": ("BOOLEAN", {"default": False}),
                 "disable_output": ("BOOLEAN", {"default": False}),
-                "select_output_index": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1}),
             },
             "optional": {
                 "image": ("IMAGE", lazy_options),
@@ -715,13 +757,14 @@ class flow_bridge_image:
             required_inputs.append("mask")
         return required_inputs
 
-    def store_and_retrieve(self, disable_input, disable_output, select_output_index, image=None, mask=None, prompt=None, extra_pnginfo=None, unique_id=None):
+    def store_and_retrieve(self, disable_input, disable_output, image=None, mask=None, prompt=None, extra_pnginfo=None, unique_id=None):
         self.prompt = prompt
         self.extra_pnginfo = extra_pnginfo
         
         image_to_output = None
         mask_to_output = None
 
+        # 核心逻辑：禁用输入则读取存储的图/遮罩，否则存入并读取当前输入的图/遮罩
         if disable_input:
             image_to_output = self.stored_image
             mask_to_output = self.stored_mask
@@ -734,27 +777,26 @@ class flow_bridge_image:
             image_to_output = self.stored_image
             mask_to_output = self.stored_mask
 
+        # 兜底：无图则生成默认1x1全黑图
         if image_to_output is None:
             default_size = 1
             image_to_output = torch.zeros((1, default_size, default_size, 3), dtype=torch.float32, device="cpu")
             
+        # 兜底：无遮罩则生成和图片尺寸匹配的全白遮罩
         if mask_to_output is None:
-            # Create a default mask matching the image dimensions
-            if image_to_output is not None:
-                batch_size, height, width, _ = image_to_output.shape
-                mask_to_output = torch.ones((batch_size, height, width), dtype=torch.float32, device="cpu")
-            else:
-                mask_to_output = torch.ones((1, default_size, default_size), dtype=torch.float32, device="cpu")
+            batch_size, height, width, _ = image_to_output.shape
+            mask_to_output = torch.ones((batch_size, height, width), dtype=torch.float32, device="cpu")
 
+        # 生成UI预览图
         subfolder_path = os.path.join(self.temp_output_dir, self.temp_subfolder)
         os.makedirs(subfolder_path, exist_ok=True)
-
         ui_image_data = []
         batch_size = image_to_output.shape[0]
         
         for i in range(batch_size):
             current_image = image_to_output[i:i+1]
             
+            # 处理默认1x1小图的预览放大
             if current_image.shape[1] == 1 and current_image.shape[2] == 1:
                 preview_image_tensor = torch.zeros((1, 32, 32, 3), dtype=torch.float32, device=current_image.device)
                 pil_image = Image.fromarray((preview_image_tensor.squeeze(0).cpu().numpy() * 255).astype(np.uint8))
@@ -764,8 +806,8 @@ class flow_bridge_image:
             filename = f"zml_image_memory_batch_{i}_{uuid.uuid4()}.png"
             file_path = os.path.join(subfolder_path, filename)
 
+            # 写入PNG元信息
             metadata = PngImagePlugin.PngInfo()
-
             if self.prompt is not None:
                 try:
                     metadata.add_text("prompt", json.dumps(self.prompt))
@@ -780,25 +822,14 @@ class flow_bridge_image:
 
             pil_image.save(file_path, pnginfo=metadata, compress_level=4)
             ui_image_data.append({"filename": filename, "subfolder": self.temp_subfolder, "type": "temp"})
-        
-        if select_output_index == 0:
-            selected_image = image_to_output
-            selected_mask = mask_to_output
-        else:
-            zero_based_index = select_output_index - 1
-            selected_index = min(zero_based_index, batch_size - 1) if batch_size > 0 else 0
-            selected_image = image_to_output[selected_index:selected_index+1]
-            if mask_to_output is not None and selected_index < mask_to_output.shape[0]:
-                selected_mask = mask_to_output[selected_index:selected_index+1]
-            else:
-                selected_mask = mask_to_output[:1] if mask_to_output is not None else None
 
+        # 禁用输出则返回阻塞器，否则返回完整的图/遮罩
         if disable_output and ExecutionBlocker is not None:
             output_image = ExecutionBlocker(None)
             output_mask = ExecutionBlocker(None)
         else:
-            output_image = selected_image
-            output_mask = selected_mask
+            output_image = image_to_output
+            output_mask = mask_to_output
             
         return {"ui": {"images": ui_image_data}, "result": (output_image, output_mask)}
 
@@ -818,9 +849,6 @@ class flow_bridge_image:
             except Exception as e:
                 print(f"Failed to load image from local file: {e}")
         return None
-
-
-
 
 
 
