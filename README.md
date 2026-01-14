@@ -35,6 +35,8 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.1.8   update flow team nodes 
 
+2025.1.14  Optimize sum_load to support caching and cleaning, update AI_GLM to support the new GLM 4.7 model, and add judgment nodes to the process group
+
 
 # II. Usage Guide
 
