@@ -583,7 +583,7 @@ class flow_ValueReceiver:
 
 
 
-class flow_tensor_Unify:
+class XXflow_tensor_Unify:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -667,22 +667,87 @@ class flow_tensor_Unify:
 
 
 
+class flow_tensor_Unify:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "keep_alpha": ("BOOLEAN", {"default": False, "label_on": "4 Channels", "label_off": "3 Channels"}),
+            },
+            "optional": {
+                "image": ("IMAGE",),
+                "mask": ("MASK",)
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("unified_image", "unified_mask")
+    FUNCTION = "unify_media"
+    CATEGORY = "Apt_Preset/flow"
+    
+    def unify_media(self, keep_alpha=False, image=None, mask=None):
+        if image is None:
+            c = 4 if keep_alpha else 3
+            unified_image = torch.zeros((1, 64, 64, c), dtype=torch.float32)
+        else:
+            img_np = image.cpu().numpy()
+            b, h, w, c = img_np.shape
+            
+            if c == 1:
+                img_np = np.repeat(img_np, 3, axis=-1)
+                c = 3
+            elif c in [3,4]:
+                pass
+            elif b in [3,4] and c == 1:
+                img_np = np.transpose(img_np, (1, 2, 0))[np.newaxis, ...]
+                b, h, w, c = img_np.shape
+
+            if img_np.dtype != np.float32:
+                img_np = img_np.astype(np.float32) / 255.0 if img_np.max() > 1 else img_np.astype(np.float32)
+
+            img_np = np.clip(img_np, 0.0, 1.0)
+
+            if keep_alpha:
+                if c == 3:
+                    alpha_channel = np.ones((b, h, w, 1), dtype=img_np.dtype)
+                    img_np = np.concatenate([img_np, alpha_channel], axis=-1)
+            else:
+                if c >= 3:
+                    img_np = img_np[:, :, :, :3]
+
+            unified_image = torch.from_numpy(img_np).to(image.device)
+
+        if mask is None:
+            unified_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
+        else:
+            mask_np = mask.cpu().numpy()
+
+            if len(mask_np.shape) == 4:
+                mask_np = mask_np[..., 0]
+            elif len(mask_np.shape) == 3 and mask_np.shape[-1] in [1,3,4]:
+                mask_np = mask_np[..., 0]
+            elif len(mask_np.shape) == 2:
+                mask_np = mask_np[np.newaxis, ...]
+
+            if mask_np.dtype != np.float32:
+                mask_np = mask_np.astype(np.float32) / 255.0 if mask_np.max() > 1 else mask_np.astype(np.float32)
+
+            mask_np = np.clip(mask_np, 0.0, 1.0)
+
+            unified_mask = torch.from_numpy(mask_np).to(mask.device)
+
+        return (unified_image, unified_mask)
 
 
-import torch
-import numpy as np
-from PIL import Image, PngImagePlugin
-import os
-import folder_paths
-from pathlib import Path
-import uuid
-import json
 
-lazy_options = {
-    "lazy": True
-}
 
-ExecutionBlocker = None
+
+
+
+
+
+
+
 try:
     from comfy_execution.graph import ExecutionBlocker
 except ImportError:
