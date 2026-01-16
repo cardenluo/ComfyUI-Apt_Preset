@@ -1,0 +1,14 @@
+[
+    "qwen-turbo",
+    "qwen-plus",
+    "deepseek-chat",
+    "deepseek-r1",
+    "glm-4",
+    "glm-3-turbo",
+    "gpt-3.5-turbo",
+    "gpt-4o-mini",
+    "llama3",
+    "llama3:70b",
+    "moonshot-v1-8k",
+    "claude-3-haiku"
+]
