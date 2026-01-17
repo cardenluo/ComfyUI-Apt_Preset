@@ -32,6 +32,8 @@
 2025.1.8  更新流程组节点
 
 2025.1.14 优化sum_load支持缓存和清理，AI_GLM更新支持GLM 4.7新模型，流程组增加判断节点
+
+2025.1.14 sum_load，sum_edit兼容 Flux2_Klein 的latent尺寸
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
