@@ -701,7 +701,7 @@ class sum_load_adv:
             "sampler": sampler,
             "scheduler": scheduler,
             "guidance": guidance,
-
+            "clip_type": clip_type,
             "clip1": clip1,
             "clip2": clip2,
             "clip3": clip3,
@@ -1111,32 +1111,21 @@ class sum_latent:
     FUNCTION = "process"
     CATEGORY = "Apt_Preset/chx_tool"
 
-    def generate(self, ratio_selected, batch_size=1, width=None, height=None, context=None):
-        clip_type=context.get("clip_type")
-        if ratio_selected == 'customer_WxH':
-            used_width = max(int(width / 8) * 8, 64)
-            used_height = max(int(height / 8) * 8, 64)
-        else:
-            used_width = self.ratio_dict[ratio_selected]["width"]
-            used_height = self.ratio_dict[ratio_selected]["height"]
-        if clip_type == "flux2":
-            latent = torch.zeros([batch_size, 128, used_height // 16, used_width // 16], device=comfy.model_management.intermediate_device())
-        else:
-            latent = torch.zeros([batch_size, 4, used_height // 8, used_width // 8])           
-            if latent.shape[1] != 16:
-                latent = latent.repeat(1, 16 // 4, 1, 1)
-        return ({"samples": latent}, )
-
     def process(self, ratio_selected, smoothness=1, batch_size=1, context=None, latent=None, pixels=None, mask=None, diff_difusion=True, width=None, height=None):
         noise_mask = True
         model = context.get("model")
-        if diff_difusion:model = DifferentialDiffusion().apply(model)[0]
+        if diff_difusion:
+            model = DifferentialDiffusion().apply(model)[0]
 
-        if latent is not None and pixels is not None:raise ValueError("Only one of 'latent', 'pixels' should be provided.")
+
+        if latent is not None and pixels is not None:
+            raise ValueError("Only one of 'latent', 'pixels' should be provided.")
+        
         if latent is not None:
             latent = latentrepeat(latent, batch_size)[0]
             context = new_context(context, model=model,latent=latent)
             return (context, latent, None)
+        
         if latent is None and pixels is None and ratio_selected == "None":
             latent = context.get("latent", None)
             latent = latentrepeat(latent, batch_size)[0]
@@ -1145,18 +1134,39 @@ class sum_latent:
 
         vae = context.get("vae")
         positive, negative = context.get("positive", None), context.get("negative", None)
-        if ratio_selected != "None":latent = self.generate(ratio_selected, batch_size, width, height, context)[0]
+        clip_type = context.get("clip_type") # 你的核心判断逻辑，保留不变
+        
+        if ratio_selected != "None":
+            if ratio_selected == 'customer_WxH':
+                used_width = max(int(width / 8) * 8, 64)
+                used_height = max(int(height / 8) * 8, 64)
+            else:
+                used_width = self.ratio_dict[ratio_selected]["width"]
+                used_height = self.ratio_dict[ratio_selected]["height"]
+            
+            if clip_type == "flux2":
+                latent_tensor = torch.zeros([batch_size, 128, used_height // 16, used_width // 16], device=comfy.model_management.intermediate_device())
+            else:
+                latent_tensor = torch.zeros([batch_size, 4, used_height // 8, used_width // 8])           
+                if latent_tensor.shape[1] != 16:
+                    latent_tensor = latent_tensor.repeat(1, 16 // 4, 1, 1)
+            latent = {"samples": latent_tensor}
 
+  
         if pixels is not None:
             if mask is not None:
-                if torch.all(mask == 0):latent = VAEEncode().encode(vae, pixels)[0]
+                if torch.all(mask == 0):
+                    latent = VAEEncode().encode(vae, pixels)[0]
                 else:
                     mask = tensor2pil(mask)
                     feathered_image = mask.filter(ImageFilter.GaussianBlur(smoothness))
                     mask = pil2tensor(feathered_image)
                     positive, negative, latent = InpaintModelConditioning().encode(positive, negative, pixels, vae, mask, noise_mask)
-            else:latent = VAEEncode().encode(vae, pixels)[0]
+            else:
+                latent = VAEEncode().encode(vae, pixels)[0]
             latent = latentrepeat(latent, batch_size)[0]
+
+
         context = new_context(context, model=model, positive=positive, negative=negative, latent=latent)
         return (context, latent, mask)
 
@@ -1194,21 +1204,11 @@ class sum_editor:
     CATEGORY = "Apt_Preset/chx_load"
     NAME = "sum_editor"
     
-    def generate(self, ratio_selected, batch_size=1, width=None, height=None, context=None):
-        clip_type=context.get("clip_type")
-        if ratio_selected == 'customer_WxH':
-            used_width = max(int(width / 8) * 8, 64)
-            used_height = max(int(height / 8) * 8, 64)
-        else:
-            used_width = self.ratio_dict[ratio_selected]["width"]
-            used_height = self.ratio_dict[ratio_selected]["height"]
-        if clip_type == "flux2":
-            latent = torch.zeros([batch_size, 128, used_height // 16, used_width // 16], device=comfy.model_management.intermediate_device())
-        else:
-            latent = torch.zeros([batch_size, 4, used_height // 8, used_width // 8])           
-            if latent.shape[1] != 16:
-                latent = latent.repeat(1, 16 // 4, 1, 1)
-        return ({"samples": latent}, )
+    def set_latent_mask2(self, latent, mask):
+        if not isinstance(latent, dict) or "samples" not in latent:raise ValueError("latent 必须是包含 'samples' 键的字典")
+        newlatent = {"samples": latent["samples"].clone()}
+        if mask is not None:newlatent["noise_mask"] = mask.reshape((-1,1,mask.shape[-2],mask.shape[-1]))
+        return newlatent
     
     def text(self, context=None, model=None, clip=None, positive=None, negative=None, pos="", neg="", latent_image=None, vae=None, latent=None, steps=None, cfg=None, sampler=None, scheduler=None, style=None, batch_size=1, ratio_selected=None, guidance=0, width=512, height=512, latent_mask=None):
         ctx_width = context.get("width") if context else None
@@ -1233,6 +1233,8 @@ class sum_editor:
         if guidance ==0.0:guidance = context.get("guidance",3.5) if context else 3.5
         if latent_mask is None:latent_mask = context.get("mask") if context else None
 
+        # ===================== 核心修改：把generate逻辑完全内嵌，无拆分 + 你的clip_type判断规则 =====================
+        clip_type = context.get("clip_type")
         if latent_image is not None:
             latent = VAEEncode().encode(vae, latent_image)[0]
             latent = latentrepeat(latent, batch_size)[0]
@@ -1248,7 +1250,21 @@ class sum_editor:
                     latent_copy = {"samples": latent["samples"].clone()}
                     latent = self.set_latent_mask2(latent_copy, latent_mask)
                 else:latent = self.set_latent_mask2(latent, latent_mask)
-        elif ratio_selected != "None":latent = self.generate(ratio_selected, batch_size, final_width, final_height, context)[0]
+        elif ratio_selected != "None":
+            # 原generate里的所有逻辑，完整搬过来，你的规则一行没改
+            if ratio_selected == 'customer_WxH':
+                used_width = max(int(final_width / 8) * 8, 64)
+                used_height = max(int(final_height / 8) * 8, 64)
+            else:
+                used_width = self.ratio_dict[ratio_selected]["width"]
+                used_height = self.ratio_dict[ratio_selected]["height"]
+            if clip_type == "flux2":
+                latent_tensor = torch.zeros([batch_size, 128, used_height // 16, used_width // 16], device=comfy.model_management.intermediate_device())
+            else:
+                latent_tensor = torch.zeros([batch_size, 4, used_height // 8, used_width // 8])           
+                if latent_tensor.shape[1] != 16:
+                    latent_tensor = latent_tensor.repeat(1, 16 // 4, 1, 1)
+            latent = {"samples": latent_tensor}
         else:
             latent = context.get("latent") if context else None
             if latent is not None:
@@ -1268,12 +1284,6 @@ class sum_editor:
        
         context = new_context(context, model=model, latent=latent, clip=clip, vae=vae, positive=positive, negative=negative, images=latent_image, mask=latent_mask, steps=steps, cfg=cfg, sampler=sampler, scheduler=scheduler, guidance=guidance, pos=pos, neg=neg, width=final_width, height=final_height, batch=batch_size)
         return (context, model, positive, negative, latent, vae, clip, latent_image, latent_mask,)
-    
-    def set_latent_mask2(self, latent, mask):
-        if not isinstance(latent, dict) or "samples" not in latent:raise ValueError("latent 必须是包含 'samples' 键的字典")
-        newlatent = {"samples": latent["samples"].clone()}
-        if mask is not None:newlatent["noise_mask"] = mask.reshape((-1,1,mask.shape[-2],mask.shape[-1]))
-        return newlatent
 
 
 
