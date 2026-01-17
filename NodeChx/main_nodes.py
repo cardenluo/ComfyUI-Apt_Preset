@@ -1324,17 +1324,6 @@ class sum_create_chx:
     CATEGORY = "Apt_Preset/chx_load"
 
     def process_settings(self, width, height, batch, steps, cfg, sampler, scheduler, data=None, guidance=3.5, lora_stack=None,over_latent=None,vae=None, over_vae=None, clip=None, model=None, over_positive=None, over_negative=None, pos="default", neg="default"):
-        clip_type=context.get("clip_type")
-        width = max(int(width / 8) * 8, 64)
-        height = max(int(height / 8) * 8, 64)
-        if clip_type == "flux2":
-            latent = torch.zeros([batch, 128, height // 16, width // 16], device=comfy.model_management.intermediate_device())
-        else:
-            latent = torch.zeros([batch, 4, height // 8, width // 8])           
-            if latent.shape[1] != 16:
-                latent = latent.repeat(1, 16 // 4, 1, 1)
-
-        latent_dict = over_latent if over_latent is not None else {"samples": latent}
 
         if over_vae is not None:vae = over_vae
         elif over_vae is None and vae != "None":
@@ -1348,6 +1337,9 @@ class sum_create_chx:
             positive, = CLIPTextEncode().encode(clip, pos)
             negative, = CLIPTextEncode().encode(clip, neg)
 
+
+
+
         if over_positive:
             positive = over_positive
             if negative is None:negative = condi_zero_out(over_positive)[0]
@@ -1356,13 +1348,21 @@ class sum_create_chx:
         if positive is not None:
             positive = node_helpers.conditioning_set_values(positive, {"guidance": guidance})
 
+
+        width = max(int(width / 8) * 8, 64)
+        height = max(int(height / 8) * 8, 64)
+        black_image = Image.new('RGB', (width, height), color=(0, 0, 0))
+        black_tensor = pil2tensor(black_image)
+        latent = encode(vae, black_tensor)[0]
+
+
         context = {
-            "model": model,"positive": positive,"negative": negative,"latent": latent_dict,"vae": vae,"clip": clip,
+            "model": model,"positive": positive,"negative": negative,"latent": latent,"vae": vae,"clip": clip,
             "steps": steps,"cfg": cfg,"sampler": sampler,"scheduler": scheduler,"guidance": guidance,
             "clip1": None,"clip2": None,"clip3": None,"clip4": None,"unet_name": None,"ckpt_name": None,
-            "pos": pos,"neg": neg,"width": width,"height": height,"batch": batch,"data": data,"clip_type":clip_type
+            "pos": pos,"neg": neg,"width": width,"height": height,"batch": batch,"data": data
         }
-        return (context, model, positive, negative, latent_dict, vae, clip, data)
+        return (context, model, positive, negative, latent, vae, clip, data)
 
 
 
