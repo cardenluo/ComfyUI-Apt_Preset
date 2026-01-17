@@ -1,0 +1,16 @@
+
+"AI_GLM_image":AI_GLM_image,
+"AI_GLM_text": AI_GLM_text,
+系统输入KEY环境变量：ZHIPUAI_API_KEY
+从文档ApiKey_GLM输入KEY
+
+
+"AI_Qwen":AI_Qwen,
+"AI_Qwen_text":AI_Qwen_text
+系统输入KEY环境变量：aliyun_API_KEY
+从文档ApiKey_AI_Qwen输入KEY
+
+
+"Ai_doubao_seedream":Ai_doubao_seedream,
+系统输入KEY环境变量：DOUBAO_API_KEY
+从文档ApiKey_doubao输入KEY
