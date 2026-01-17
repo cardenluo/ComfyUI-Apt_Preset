@@ -93,7 +93,8 @@ any_typ= AnyType("*")
 
 MAX_RESOLUTION = 88888
 CLIP_TYPE = ["sdxl", "sd3", "flux", "hunyuan_video", "stable_diffusion", "stable_audio", "mochi", "ltxv", 
-             "pixart", "cosmos", "lumina2", "wan","flux2", "ovis"]
+             "pixart", "cosmos", "lumina2", "wan","flux2", "ovis", "hidream", "chroma", "ace", "omnigen2", "qwen_image"]
+
 
 
 
