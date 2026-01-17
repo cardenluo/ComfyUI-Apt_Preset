@@ -1372,7 +1372,7 @@ class sum_create_chx:
                 "over_negative": ("CONDITIONING",),
                 "over_latent": ("LATENT",),
                 "lora_stack": ("LORASTACK",),
-                "data":(folder_paths.ANY_TYPE,),
+                "data":(ANY_TYPE,),
             },
         }
 
