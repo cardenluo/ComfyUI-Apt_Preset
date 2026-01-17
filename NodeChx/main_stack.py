@@ -52,6 +52,7 @@ WEIGHT_TYPES = ["linear", "ease in", "ease out", 'ease in-out', 'reverse in-out'
 
 
 
+
 class Stack_latent:
     ratio_sizes, ratio_dict = read_ratios()
 
@@ -97,6 +98,7 @@ class Stack_latent:
 
 
 
+
 class Apply_latent:
     ratio_sizes, ratio_dict = read_ratios()
 
@@ -121,6 +123,8 @@ class Apply_latent:
         default_width = 512
         default_height = 512
         batch_size = 1
+        # 核心新增：从positive条件中提取clip_type，无context也能获取，100%有效
+        clip_type = positive[0][1].get("clip_type") if (positive and len(positive) > 0 and isinstance(positive[0][1], dict)) else None
 
         for latent_info in latent_stack:
             latent, pixels, mask, noise_mask, diff_difusion, smoothness, ratio_selected, batch_size, width, height = latent_info
@@ -136,13 +140,28 @@ class Apply_latent:
                     width_val = self.ratio_dict[ratio_selected]["width"]
                     height_val = self.ratio_dict[ratio_selected]["height"]
                 
-                latent = {"samples": torch.zeros([batch_size, 4, height_val // 8, width_val // 8])}
+
+                width = max(int(width_val / 8) * 8, 64)
+                height = max(int(height_val / 8) * 8, 64)
+                black_image = Image.new('RGB', (width, height), color=(0, 0, 0))
+                black_tensor = pil2tensor(black_image)
+                latent = encode(vae, black_tensor)[0]
+
+
                 if diff_difusion:
                     model = DifferentialDiffusion().apply(model)[0]
                 return model, positive, negative, latent
 
+            # ======== 严格按你的规则修改：默认张量生成 ========
             if latent is None :
-                latent = {"samples": torch.zeros([batch_size, 4, default_height // 8, default_width // 8])}
+                width_val = max(int(default_width / 8) * 8, 64)
+                height_val = max(int(default_height / 8) * 8, 64)
+                if clip_type == "flux2":
+                    latent = {"samples": torch.zeros([batch_size, 128, height_val // 16, width_val // 8], device=comfy.model_management.intermediate_device())}
+                else:
+                    latent = {"samples": torch.zeros([batch_size, 4, height_val // 8, width_val // 8])}           
+                    if latent["samples"].shape[1] != 16:
+                        latent["samples"] = latent["samples"].repeat(1, 16 // 4, 1, 1)
                 
             if pixels is not None:
                 latent = VAEEncode().encode(vae, pixels)[0]
@@ -152,7 +171,6 @@ class Apply_latent:
                     pass
                 else:
                     raise TypeError("No input pixels")
-
 
             if mask is not None:
                 mask = tensor2pil(mask)
@@ -165,8 +183,6 @@ class Apply_latent:
 
         latent = latentrepeat(latent, batch_size)[0]
         return model, positive, negative, latent
-
-
 
 
 
