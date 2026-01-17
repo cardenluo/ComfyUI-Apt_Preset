@@ -663,14 +663,11 @@ class sum_load_adv:
 #----------------------------------latent-------------------------------
 
         width = max(int(width / 8) * 8, 64)
-        height = max(int(height / 8) * 8, 64)        
+        height = max(int(height / 8) * 8, 64)
         device = comfy.model_management.intermediate_device()
-        latent = torch.zeros([1, 4, height // 16, width // 16], device=device)
-        if latent.shape[1] != 16:
-            latent = latent.repeat(1, 16 // 4, 1, 1)  
-        if latent.shape[1] != 128:
-            latent = latent.repeat(1, 128 // 16, 1, 1)  
-
+        latent = torch.zeros([1, 4, height//8, width//8], device=device)
+        latent = latent.repeat(1, (128 if 'flux' in str(comfy.model_management.get_torch_device()).lower() else 16)//4, 1, 1)
+        if latent.shape[1]==128: latent = latent.reshape(1,128,height//16,width//16)
 #----------------------------------latent-------------------------------
 
 
@@ -1093,12 +1090,11 @@ class sum_editor:
         else:
             used_width = self.ratio_dict[ratio_selected]["width"]
             used_height = self.ratio_dict[ratio_selected]["height"]
-        latent = torch.zeros([batch_size, 4, used_height // 16, used_width // 16], device=device)
-        target_channels = 128 if (latent.shape[2] == used_height//16 and latent.shape[3] == used_width//16) else 16
-        if latent.shape[1] != target_channels:
-            latent = latent.repeat(1, target_channels // latent.shape[1], 1, 1)
-        if target_channels ==16 and latent.shape[2] != used_height//8:
-            latent = torch.zeros([batch_size, 16, used_height //8, used_width//8], device=device)
+        latent = torch.zeros([batch_size, 4, used_height // 8, used_width // 8], device=device)
+        if latent.shape[1] != 16:
+            latent = latent.repeat(1, 16 // 4, 1, 1)
+        if latent.shape[1] == 128:
+            latent = torch.zeros([batch_size, 128, used_height // 16, used_width // 16], device=device)
         return ({"samples": latent}, )
     
     def text(self, context=None, model=None, clip=None, positive=None, negative=None, 
@@ -1226,10 +1222,6 @@ class sum_editor:
 
 
 
-
-
-
-
 class sum_Normal_TextEncode:
     @classmethod
     def INPUT_TYPES(cls):  
@@ -1303,11 +1295,11 @@ class sum_latent:
         else:
             used_width = self.ratio_dict[ratio_selected]["width"]
             used_height = self.ratio_dict[ratio_selected]["height"]
-        latent = torch.zeros([batch_size, 4, used_height // 16, used_width // 16], device=device)
-        if latent.shape[1] != 128:
-            latent = latent.repeat(1, 128 // latent.shape[1], 1, 1)
-        if latent.shape[2] != used_height // 8 or latent.shape[3] != used_width //8:
-            latent = torch.zeros([batch_size, 16, used_height//8, used_width//8], device=device)
+        latent = torch.zeros([batch_size, 4, used_height // 8, used_width // 8], device=device)
+        if latent.shape[1] != 16:
+            latent = latent.repeat(1, 16 // 4, 1, 1)
+        if latent.shape[1] == 128:
+            latent = torch.zeros([batch_size, 128, used_height // 16, used_width // 16], device=device)
         return ({"samples": latent}, )
 
     def process(self, ratio_selected, smoothness=1, batch_size=1, context=None, latent=None, pixels=None, mask=None, diff_difusion=True, width=None, height=None):
@@ -1390,15 +1382,17 @@ class sum_create_chx:
     CATEGORY = "Apt_Preset/chx_load"
 
     def process_settings(self, width, height, batch, steps, cfg, sampler, scheduler, data=None, guidance=3.5, lora_stack=None,over_latent=None,vae=None, over_vae=None, clip=None, model=None, over_positive=None, over_negative=None, pos="default", neg="default"):
-        width = max(int(width - (width % 8)), 64)
-        height = max(int(height - (height % 8)), 64)
-        device = comfy.model_management.intermediate_device()
-        latent = torch.zeros([batch, 4, height // 16, width // 16], device=device)
-        if latent.shape[1] != 128:
-            latent = latent.repeat(1, 128 // latent.shape[1], 1, 1)
-        if latent.shape[2] != height // 8 or latent.shape[3] != width // 8:
-            latent = torch.zeros([batch, 16, height // 8, width // 8], device=device)
 
+#-------------------------------------
+        width = max(int(width / 8) * 8, 64)
+        height = max(int(height / 8) * 8, 64)
+        device = comfy.model_management.intermediate_device()
+        latent = torch.zeros([batch, 4, height // 8, width // 8], device=device)
+        if latent.shape[1] != 16:
+            latent = latent.repeat(1, 16 // 4, 1, 1)
+        if latent.shape[1] == 128:
+            latent = torch.zeros([batch, 128, height // 16, width // 16], device=device)
+#----------------------------------------------------------------------
         if over_latent is not None:
             latent_dict = over_latent
         else:
@@ -1458,7 +1452,6 @@ class sum_create_chx:
         }
 
         return (context, model, positive, negative, latent_dict, vae, clip, data)
-
 
 
 
