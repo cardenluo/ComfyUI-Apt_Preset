@@ -37,6 +37,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.1.14  Optimize sum_load to support caching and cleaning, update AI_GLM to support the new GLM 4.7 model, and add judgment nodes to the process group
 
+2025.01.17  sum_load and sum_edit are compatible with the latent size of Flux2_Klein
 
 # II. Usage Guide
 
