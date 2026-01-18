@@ -648,7 +648,7 @@ class text_Splitter:
             return ("❌ No valid content after splitting", [])
         random.seed(seed)
         single_text = split_list[random.randint(0, len(split_list)-1)] if split_list else ""
-        return (single_text, split_list)
+        return (single_text, split_list, split_list)
 
 
 
@@ -1898,4 +1898,20 @@ class text_StrMatrix:
             formatted_strings = []
 
         return (formatted_strings,formatted_strings,)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
