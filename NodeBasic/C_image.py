@@ -5442,497 +5442,6 @@ class Image_safe_size:
 
 
 
-class Image_pad_adjust_restore:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "pad_image": ("IMAGE",),
-                "stitch": ("STITCH4",),
-                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, }),
-            },
-        }
-    
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
-    RETURN_NAMES = ("restored_image", "restored_mask", "original_image")
-    FUNCTION = "restore"
-    CATEGORY = "Apt_Preset/image"
-
-    def create_feather_mask(self, width, height, feather_size):
-        if feather_size <= 0:
-            return np.ones((height, width), dtype=np.float32)
-        feather = min(feather_size, min(width, height) // 2)
-        mask = np.ones((height, width), dtype=np.float32)
-        for y in range(feather):
-            mask[y, :] = y / feather
-        for y in range(height - feather, height):
-            mask[y, :] = (height - y) / feather
-        for x in range(feather):
-            mask[:, x] = np.minimum(mask[:, x], x / feather)
-        for x in range(width - feather, width):
-            mask[:, x] = np.minimum(mask[:, x], (width - x) / feather)
-        return mask
-
-    def restore(self, pad_image, stitch, smoothness):
-        original_image = stitch["original_image"]
-        original_h, original_w = stitch["original_shape"]
-        orig_left, orig_top, orig_right, orig_bottom, act_left, act_top, act_right, act_bottom = stitch["pad_info"]
-        crop_offset_left, crop_offset_top = stitch.get("crop_offsets", (0, 0))
-        has_mask = stitch["has_mask"]
-        original_mask = stitch["original_mask"]
-        
-        current_b, current_h, current_w, current_c = pad_image.shape
-        batch_size = original_image.shape[0] if len(original_image.shape) == 4 else 1
-        
-        restored_images = []
-        for i in range(batch_size):
-            orig_img = original_image[i] if len(original_image.shape) == 4 else original_image
-            restored_img = orig_img.clone()
-            processed_img = pad_image[i] if pad_image.shape[0] > 1 else pad_image[0]
-            
-            crop_left = crop_offset_left
-            crop_top = crop_offset_top
-            crop_right = max(-orig_right, 0)
-            crop_bottom = max(-orig_bottom, 0)
-            
-            pad_left = act_left
-            pad_top = act_top
-            pad_right = act_right
-            pad_bottom = act_bottom
-            
-            valid_left = pad_left
-            valid_top = pad_top
-            valid_right = processed_img.shape[1] - pad_right
-            valid_bottom = processed_img.shape[0] - pad_bottom
-            
-            valid_left = max(0, min(valid_left, processed_img.shape[1]))
-            valid_top = max(0, min(valid_top, processed_img.shape[0]))
-            valid_right = max(valid_left, min(valid_right, processed_img.shape[1]))
-            valid_bottom = max(valid_top, min(valid_bottom, processed_img.shape[0]))
-            
-            content_img = processed_img[valid_top:valid_bottom, valid_left:valid_right, :]
-            
-            dst_left = crop_left
-            dst_top = crop_top
-            dst_right = min(original_w - crop_right, dst_left + content_img.shape[1])
-            dst_bottom = min(original_h - crop_bottom, dst_top + content_img.shape[0])
-            
-            src_width = dst_right - dst_left
-            src_height = dst_bottom - dst_top
-            
-            if src_width > 0 and src_height > 0:
-                content = content_img[:src_height, :src_width, :].cpu().numpy()
-                background = orig_img[dst_top:dst_bottom, dst_left:dst_right, :].cpu().numpy()
-                
-                if smoothness > 0:
-                    feather_mask = self.create_feather_mask(src_width, src_height, smoothness)
-                    feather_mask = np.expand_dims(feather_mask, axis=-1)
-                    blended = background * (1 - feather_mask) + content * feather_mask
-                    restored_img[dst_top:dst_bottom, dst_left:dst_right, :] = torch.from_numpy(blended).to(restored_img.device)
-                else:
-                    restored_img[dst_top:dst_bottom, dst_left:dst_right, :] = content_img[:src_height, :src_width, :]
-            
-            restored_images.append(restored_img.unsqueeze(0))
-        
-        restored_image = torch.cat(restored_images, dim=0)
-        
-        if has_mask and original_mask is not None:
-            restored_mask = original_mask
-        else:
-            restored_mask = torch.zeros((restored_image.shape[0], restored_image.shape[1], restored_image.shape[2]), dtype=torch.float32, device=restored_image.device)
-        
-        return (restored_image, restored_mask, original_image)
-
-
-
-class Image_pad_adjust:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-
-                "top": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
-                "bottom": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
-                "left": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
-                "right": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
-                "bg_color": (["white", "black", "red", "green", "blue", "gray"], {"default": "black"}),
-                "smoothness": ("INT", {"default": 0, "step": 1, "min": 0, "max": 500}),
-                "divisible_by": ("INT", {"default": 2, "min": 1, "max": 512, "step": 1}),
-                "auto_pad": (["None", "auto_square", "target_WxH"], {"default": "None"}),
-                "pad_position": (["left-top", "mid-top", "right-top", "left-center", "mid-center", "right-center", "left-bottom", "mid-bottom", "right-bottom"], {"default": "mid-center"}),               
-                "target_W": ("INT", {"default": 512, "min": 1, "max": 14096, "step": 1}),
-                "target_H": ("INT", {"default": 512, "min": 1, "max": 14096, "step": 1}),
-                "pad_mask_remove": ("BOOLEAN", {"default": True,}),
-            },
-            "optional": {
-                "image": ("IMAGE",),
-                "mask": ("MASK",),
-            }
-        }
-    
-    RETURN_TYPES = ("IMAGE", "MASK", "STITCH4")
-    RETURN_NAMES = ("image", "mask", "stitch")
-    FUNCTION = "process"
-    CATEGORY = "Apt_Preset/image"
-    DESCRIPTION = """
-    - bg_color: 填充的颜色
-    - smoothness: 遮罩边缘平滑
-    - divisible_by: 输出图像尺寸需整除的值
-    - auto_pad自动填充:None表示关闭自动填充
-    - auto_square按长边填充成正方形，target_WxH按输入的宽高填充
-    """
-
-    def process(self, left, top, right, bottom, bg_color, smoothness, divisible_by, auto_pad, target_W, target_H, pad_position, pad_mask_remove, image=None, mask=None):
-        original_shape = (image.shape[1], image.shape[2])
-        original_left, original_top, original_right, original_bottom = left, top, right, bottom
-        original_image = image.clone()
-
-        if auto_pad == "auto_square":
-            image, mask, left, top, right, bottom = self.auto_padding(image, mask, left, top, right, bottom, pad_position)
-        elif auto_pad == "target_WxH":
-            image, mask, left, top, right, bottom = self.target_padding(image, mask, left, top, right, bottom, target_W, target_H, pad_position)
-
-        cropped_image, cropped_mask = self.crop_image(image, mask, left, top, right, bottom)
-        padded_image, actual_left, actual_top, actual_right, actual_bottom = self.add_padding(
-            cropped_image, max(left, 0), max(top, 0), max(right, 0), max(bottom, 0), bg_color, divisible_by)
-        
-        # 1. 生成原始遮罩和填充区域掩码（无平滑）
-        raw_mask, padding_mask = self.create_mask(cropped_image, actual_left, actual_top, actual_right, actual_bottom, 
-                                    0, cropped_mask, divisible_by)
-        
-        # 2. 标记原始图像区域（非填充区）
-        original_region = (1 - padding_mask) > 0.5  # 硬边界，确保填充区为False
-        
-        # 3. 仅对原始区域内的遮罩进行平滑处理
-        if smoothness > 0 and pad_mask_remove:
-            # 先将填充区域的遮罩清零，避免平滑扩散到填充区
-            masked_raw = raw_mask * original_region.float()
-            # 对清理后的遮罩进行平滑
-            smoothed_mask, _ = self.create_mask_from_tensor(cropped_image, actual_left, actual_top, actual_right, actual_bottom, 
-                                    smoothness, masked_raw, divisible_by)
-            # 再次确保填充区域无残留
-            final_mask = smoothed_mask * original_region.float()
-        elif smoothness > 0:
-            # 不移除填充区时，正常平滑全部遮罩
-            final_mask, _ = self.create_mask(cropped_image, actual_left, actual_top, actual_right, actual_bottom, 
-                                    smoothness, cropped_mask, divisible_by)
-        else:
-            # 无平滑时，根据pad_mask_remove决定是否保留填充区遮罩
-            if pad_mask_remove:
-                final_mask = raw_mask * original_region.float()
-            else:
-                final_mask = raw_mask  # 关键修复：当pad_mask_remove=False时，直接使用原始遮罩（保留填充区）
-        
-        crop_offset_left = max(-left, 0)
-        crop_offset_top = max(-top, 0)
-        
-        pad_info = (original_left, original_top, original_right, original_bottom,
-                    actual_left, actual_top, actual_right, actual_bottom)
-        
-        stitch_info = {
-            "original_image": original_image,
-            "original_shape": original_shape,
-            "pad_info": pad_info,
-            "crop_offsets": (crop_offset_left, crop_offset_top),
-            "bg_color": bg_color,
-            "has_mask": mask is not None,
-            "original_mask": mask.clone() if mask is not None else None
-        }
-        return (padded_image, final_mask, stitch_info)
-
-
-    def create_mask_from_tensor(self, image, left, top, right, bottom, smoothness, mask_tensor, divisible_by=1):
-        masks = []
-        padding_masks = []
-        image = [tensor2pil(img) for img in image]
-        mask = [tensor2pil(m) for m in mask_tensor] if isinstance(mask_tensor, torch.Tensor) and mask_tensor.dim() > 3 else [tensor2pil(mask_tensor)]
-        
-        for i, img in enumerate(image):
-            target_width = img.width + left + right
-            target_height = img.height + top + bottom
-            if divisible_by > 1:
-                target_width = math.ceil(target_width / divisible_by) * divisible_by
-                target_height = math.ceil(target_height / divisible_by) * divisible_by
-                adjusted_right = target_width - img.width - left
-                adjusted_bottom = target_height - img.height - top
-            else:
-                adjusted_right = right
-                adjusted_bottom = bottom
-                
-            mask_image = Image.new("L", (target_width, target_height), 0)
-            mask_to_paste = mask[i] if len(mask) > 1 else mask[0]
-            mask_image.paste(mask_to_paste, (left, top))
-            
-            padding_mask = Image.new("L", (target_width, target_height), 255)
-            padding_draw = ImageDraw.Draw(padding_mask)
-            padding_draw.rectangle((left, top, img.width + left, img.height + top), fill=0)
-            
-            if smoothness > 0:
-                smoothed_mask_tensor = smoothness_mask(mask_image, smoothness)
-                masks.append(smoothed_mask_tensor)
-                smoothed_padding_pil = pil2tensor(padding_mask)
-                smoothed_padding_mask = smoothness_mask(tensor2pil(smoothed_padding_pil), smoothness)
-                padding_masks.append(smoothed_padding_mask)
-            else:
-                masks.append(pil2tensor(mask_image))
-                padding_masks.append(pil2tensor(padding_mask))
-                    
-        final_masks = torch.cat(masks, dim=0) if len(masks) > 1 else masks[0].unsqueeze(0)
-        final_padding_masks = torch.cat(padding_masks, dim=0) if len(padding_masks) > 1 else padding_masks[0].unsqueeze(0)
-        final_padding_masks = torch.clamp(final_padding_masks, 0, 1)
-        
-        return final_masks, final_padding_masks
-
-
-    def target_padding(self, image, mask, left, top, right, bottom, target_W, target_H, pad_position):
-        batch_size, height, width, _ = image.shape
-        
-        # 计算需要的填充或裁切量
-        delta_width = target_W - width
-        delta_height = target_H - height
-        
-        # 根据pad_position计算左右和上下的填充/裁切量
-        left_pad, right_pad, top_pad, bottom_pad = self.calculate_padding_or_cropping(delta_width, delta_height, pad_position)
-        
-        new_left = left + left_pad
-        new_right = right + right_pad
-        new_top = top + top_pad
-        new_bottom = bottom + bottom_pad
-        
-        return image, mask, new_left, new_top, new_right, new_bottom
-    
-    def calculate_padding_or_cropping(self, delta_width, delta_height, pad_position):
-        """
-        根据delta值（正数表示填充，负数表示裁切）和pad_position计算左右和上下的填充或裁切量
-        支持9个位置：left-top, mid-top, right-top, 
-                   left-center, mid-center, right-center,
-                   left-bottom, mid-bottom, right-bottom
-        """
-        # 解析位置参数
-        parts = pad_position.split('-')
-        if len(parts) != 2:
-            # 如果格式不正确，默认使用mid-center
-            left_pad, right_pad = self.calculate_horizontal_adjustment(delta_width, "mid")
-            top_pad, bottom_pad = self.calculate_vertical_adjustment(delta_height, "center")
-            return left_pad, right_pad, top_pad, bottom_pad
-        
-        horizontal_pos, vertical_pos = parts
-        
-        # 计算水平方向调整（左右）
-        left_pad, right_pad = self.calculate_horizontal_adjustment(delta_width, horizontal_pos)
-        
-        # 计算垂直方向调整（上下）
-        top_pad, bottom_pad = self.calculate_vertical_adjustment(delta_height, vertical_pos)
-        
-        return left_pad, right_pad, top_pad, bottom_pad
-    
-    def calculate_horizontal_adjustment(self, delta_width, position):
-        """
-        计算水平平方向（左右）的调整量（正数充或裁切）
-        delta_width: 正数表示填充，负数表示裁切
-        position: left, mid, right
-        """
-        if delta_width >= 0:
-            # 填充模式
-            if position == "left":
-                return delta_width, 0
-            elif position == "right":
-                return 0, delta_width
-            elif position == "mid":
-                left = delta_width // 2
-                right = delta_width - left
-                return left, right
-            else:  # 默认使用mid
-                left = delta_width // 2
-                right = delta_width - left
-                return left, right
-        else:
-            # 裁切模式
-            crop_width = -delta_width
-            if position == "left":
-                return -crop_width, 0  # 从左边裁切
-            elif position == "right":
-                return 0, -crop_width  # 从右边裁切
-            elif position == "mid":
-                left = crop_width // 2
-                right = crop_width - left
-                return -left, -right  # 从左右两边平均裁切
-            else:  # 默认使用mid
-                left = crop_width // 2
-                right = crop_width - left
-                return -left, -right
-    
-    def calculate_vertical_adjustment(self, delta_height, position):
-        """
-        计算垂直方向（上下）的调整量（填充或裁切）
-        delta_height: 正数表示填充，负数表示裁切
-        position: top, center, bottom
-        """
-        if delta_height >= 0:
-            # 填充模式
-            if position == "top":
-                return delta_height, 0
-            elif position == "bottom":
-                return 0, delta_height
-            elif position == "center":
-                top = delta_height // 2
-                bottom = delta_height - top
-                return top, bottom
-            else:  # 默认使用center
-                top = delta_height // 2
-                bottom = delta_height - top
-                return top, bottom
-        else:
-            # 裁切模式
-            crop_height = -delta_height
-            if position == "top":
-                return -crop_height, 0  # 从顶部裁切
-            elif position == "bottom":
-                return 0, -crop_height  # 从底部裁切
-            elif position == "center":
-                top = crop_height // 2
-                bottom = crop_height - top
-                return -top, -bottom  # 从上下两边平均裁切
-            else:  # 默认使用center
-                top = crop_height // 2
-                bottom = crop_height - top
-                return -top, -bottom
-
-    def auto_padding(self, image, mask, left, top, right, bottom, pad_position):
-        batch_size, height, width, _ = image.shape
-        target_size = max(width, height)
-        delta_width = target_size - width
-        delta_height = target_size - height
-        
-        # 根据pad_position计算左右和上下的填充量
-        left_pad, right_pad, top_pad, bottom_pad = self.calculate_padding_or_cropping(delta_width, delta_height, pad_position)
-        
-        new_left = left + left_pad
-        new_right = right + right_pad
-        new_top = top + top_pad
-        new_bottom = bottom + bottom_pad
-        
-        return image, mask, new_left, new_top, new_right, new_bottom
-
-    def crop_image(self, image, mask, left, top, right, bottom):
-        crop_left = max(-left, 0)
-        crop_top = max(-top, 0)
-        crop_right = max(-right, 0)
-        crop_bottom = max(-bottom, 0)
-        images = [tensor2pil(img) for img in image]
-        cropped_images = []
-        for img in images:
-            width, height = img.size
-            new_left = crop_left
-            new_top = crop_top
-            new_right = width - crop_right
-            new_bottom = height - crop_bottom
-            new_left = min(max(new_left, 0), width)
-            new_top = min(max(new_top, 0), height)
-            new_right = max(min(new_right, width), new_left)
-            new_bottom = max(min(new_bottom, height), new_top)
-            cropped_img = img.crop((new_left, new_top, new_right, new_bottom))
-            cropped_images.append(pil2tensor(cropped_img))
-        cropped_masks = None
-        if mask is not None:
-            masks = [tensor2pil(m) for m in mask] if isinstance(mask, torch.Tensor) and mask.dim() > 3 else [tensor2pil(mask)]
-            cropped_masks = []
-            for m in masks:
-                width, height = m.size
-                new_left = crop_left
-                new_top = crop_top
-                new_right = width - crop_right
-                new_bottom = height - crop_bottom
-                new_left = min(max(new_left, 0), width)
-                new_top = min(max(new_top, 0), height)
-                new_right = max(min(new_right, width), new_left)
-                new_bottom = max(min(new_bottom, height), new_top)
-                cropped_mask = m.crop((new_left, new_top, new_right, new_bottom))
-                cropped_masks.append(pil2tensor(cropped_mask))
-            cropped_masks = torch.cat(cropped_masks, dim=0)
-        return torch.cat(cropped_images, dim=0), cropped_masks
-
-    def add_padding(self, image, left, top, right, bottom, bg_color, divisible_by=1):
-        color_map = {
-            "white": (255, 255, 255),
-            "black": (0, 0, 0),
-            "red": (255, 0, 0),
-            "green": (0, 255, 0),
-            "blue": (0, 0, 255),
-            "gray": (128, 128, 128)
-        }
-        color = color_map.get(bg_color, (0, 0, 0))
-        padded_images = []
-        image = [tensor2pil(img) for img in image]
-        for img in image:
-            target_width = img.width + left + right
-            target_height = img.height + top + bottom
-            if divisible_by > 1:
-                target_width = math.ceil(target_width / divisible_by) * divisible_by
-                target_height = math.ceil(target_height / divisible_by) * divisible_by
-                adjusted_right = target_width - img.width - left
-                adjusted_bottom = target_height - img.height - top
-            else:
-                adjusted_right = right
-                adjusted_bottom = bottom
-            padded_image = Image.new("RGB", (target_width, target_height), color)
-            padded_image.paste(img, (left, top))
-            padded_images.append(pil2tensor(padded_image))
-        return torch.cat(padded_images, dim=0), left, top, adjusted_right, adjusted_bottom
-
-    def create_mask(self, image, left, top, right, bottom, smoothness, mask=None, divisible_by=1):
-        masks = []
-        padding_masks = []
-        image = [tensor2pil(img) for img in image]
-        if mask is not None:
-            mask = [tensor2pil(m) for m in mask] if isinstance(mask, torch.Tensor) and mask.dim() > 3 else [tensor2pil(mask)]
-        for i, img in enumerate(image):
-            target_width = img.width + left + right
-            target_height = img.height + top + bottom
-            if divisible_by > 1:
-                target_width = math.ceil(target_width / divisible_by) * divisible_by
-                target_height = math.ceil(target_height / divisible_by) * divisible_by
-                adjusted_right = target_width - img.width - left
-                adjusted_bottom = target_height - img.height - top
-            else:
-                adjusted_right = right
-                adjusted_bottom = bottom
-            shape = (left, top, img.width + left, img.height + top)
-            mask_image = Image.new("L", (target_width, target_height), 255)
-            draw = ImageDraw.Draw(mask_image)
-            draw.rectangle(shape, fill=0)
-            if mask is not None:
-                mask_to_paste = mask[i] if len(mask) > 1 else mask[0]
-                mask_image.paste(mask_to_paste, (left, top))
-            
-            # 创建padding_mask（原图像区域为0，填充区域为1）
-            padding_mask = Image.new("L", (target_width, target_height), 255)  # 默认全为255（填充区域）
-            padding_draw = ImageDraw.Draw(padding_mask)
-            padding_draw.rectangle(shape, fill=0)  # 原图像区域为0
-            
-            if smoothness > 0:
-                smoothed_mask_tensor = smoothness_mask(mask_image, smoothness)
-                masks.append(smoothed_mask_tensor)
-                # 对padding_mask也应用平滑处理，但需要转换为0-1范围
-                smoothed_padding_pil = pil2tensor(padding_mask)  # 转换为tensor (0-1范围)
-                smoothed_padding_mask = smoothness_mask(tensor2pil(smoothed_padding_pil), smoothness)
-                padding_masks.append(smoothed_padding_mask)
-            else:
-                masks.append(pil2tensor(mask_image))
-                padding_masks.append(pil2tensor(padding_mask))
-                
-        final_masks = torch.cat(masks, dim=0) if len(masks) > 1 else masks[0].unsqueeze(0)
-        final_padding_masks = torch.cat(padding_masks, dim=0) if len(padding_masks) > 1 else padding_masks[0].unsqueeze(0)
-        
-        # 确保padding_mask在0-1范围内
-        final_padding_masks = torch.clamp(final_padding_masks, 0, 1)
-        
-        return final_masks, final_padding_masks
-
-
 
 class Image_smooth_blur:
     @classmethod
@@ -8000,14 +7509,6 @@ class Image_transform_layer_adv:
 
 
 
-
-
-
-
-
-
-
-
 class color_select:
     @classmethod
     def INPUT_TYPES(cls):
@@ -8058,6 +7559,481 @@ class color_select:
                 final_color = "#FFFFFF"
         
         return (final_color,final_color,)
+
+
+
+
+
+#region-----pad组---------------
+
+class STITCH4:
+    pass
+
+class Image_pad_adjust_restore:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "pad_image": ("IMAGE",),
+                "stitch": ("STITCH4",),
+                "smoothness": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, }),
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("restored_image", "restored_mask", "original_image")
+    FUNCTION = "restore"
+    CATEGORY = "Apt_Preset/image"
+
+    def create_feather_mask(self, width, height, feather_size, device):
+        if feather_size <= 0:
+            return torch.ones((height, width, 1), dtype=torch.float32, device=device)
+        
+        feather = min(feather_size, min(width, height) // 2)
+        
+        y_coords = torch.arange(height, device=device).reshape(-1, 1)
+        x_coords = torch.arange(width, device=device).reshape(1, -1)
+        
+        mask = torch.ones((height, width), dtype=torch.float32, device=device)
+        
+        mask[:feather, :] = torch.minimum(mask[:feather, :], y_coords[:feather] / feather)
+        mask[height-feather:, :] = torch.minimum(mask[height-feather:, :], (height - y_coords[height-feather:]) / feather)
+        mask[:, :feather] = torch.minimum(mask[:, :feather], x_coords[:, :feather] / feather)
+        mask[:, width-feather:] = torch.minimum(mask[:, width-feather:], (width - x_coords[:, width-feather:]) / feather)
+        
+        return mask.unsqueeze(-1)
+
+    def restore(self, pad_image, stitch, smoothness):
+        original_image = stitch["original_image"]
+        original_h, original_w = stitch["original_shape"]
+        orig_left, orig_top, orig_right, orig_bottom, act_left, act_top, act_right, act_bottom = stitch["pad_info"]
+        crop_offset_left, crop_offset_top = stitch.get("crop_offsets", (0, 0))
+        has_mask = stitch["has_mask"]
+        original_mask = stitch["original_mask"]
+        
+        device = pad_image.device
+        
+        batch_size = original_image.shape[0] if len(original_image.shape) == 4 else 1
+        current_b, current_h, current_w, current_c = pad_image.shape
+        
+        crop_left = crop_offset_left
+        crop_top = crop_offset_top
+        crop_right = max(-orig_right, 0)
+        crop_bottom = max(-orig_bottom, 0)
+        
+        pad_left = act_left
+        pad_top = act_top
+        pad_right = act_right
+        pad_bottom = act_bottom
+        
+        valid_left = max(0, min(pad_left, current_w))
+        valid_top = max(0, min(pad_top, current_h))
+        valid_right = max(valid_left, min(current_w - pad_right, current_w))
+        valid_bottom = max(valid_top, min(current_h - pad_bottom, current_h))
+        
+        src_width = valid_right - valid_left
+        src_height = valid_bottom - valid_top
+        
+        feather_mask = None
+        if smoothness > 0 and src_width > 0 and src_height > 0:
+            feather_mask = self.create_feather_mask(src_width, src_height, smoothness, device)
+        
+        dst_left = crop_left
+        dst_top = crop_top
+        dst_right = min(original_w - crop_right, dst_left + src_width)
+        dst_bottom = min(original_h - crop_bottom, dst_top + src_height)
+        
+        actual_src_width = dst_right - dst_left
+        actual_src_height = dst_bottom - dst_top
+        
+        if batch_size > 1:
+            if len(original_image.shape) == 3:
+                original_image = original_image.unsqueeze(0).repeat(batch_size, 1, 1, 1)
+            
+            restored_image = original_image.clone()
+            
+            content_img = pad_image[:, valid_top:valid_bottom, valid_left:valid_right, :]
+            
+            if actual_src_width > 0 and actual_src_height > 0:
+                content_img = content_img[:, :actual_src_height, :actual_src_width, :]
+                
+                if smoothness > 0 and feather_mask is not None:
+                    background = restored_image[:, dst_top:dst_bottom, dst_left:dst_right, :]
+                    blended = background * (1 - feather_mask) + content_img * feather_mask
+                    restored_image[:, dst_top:dst_bottom, dst_left:dst_right, :] = blended
+                else:
+                    restored_image[:, dst_top:dst_bottom, dst_left:dst_right, :] = content_img
+        else:
+            restored_image = original_image.clone()
+            content_img = pad_image[0, valid_top:valid_bottom, valid_left:valid_right, :]
+            
+            if actual_src_width > 0 and actual_src_height > 0:
+                content_img = content_img[:actual_src_height, :actual_src_width, :]
+                
+                if smoothness > 0 and feather_mask is not None:
+                    background = restored_image[0, dst_top:dst_bottom, dst_left:dst_right, :]
+                    blended = background * (1 - feather_mask) + content_img * feather_mask
+                    restored_image[0, dst_top:dst_bottom, dst_left:dst_right, :] = blended
+                else:
+                    restored_image[0, dst_top:dst_bottom, dst_left:dst_right, :] = content_img
+        
+        if has_mask and original_mask is not None:
+            restored_mask = original_mask
+        else:
+            restored_mask = torch.zeros((restored_image.shape[0], restored_image.shape[1], restored_image.shape[2]), 
+                                       dtype=torch.float32, device=device)
+        
+        return (restored_image, restored_mask, original_image)
+
+
+class Image_pad_adjust:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "top": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
+                "bottom": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
+                "left": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
+                "right": ("INT", {"default": 0, "step": 1, "min": -14096, "max": 14096}),
+                "bg_color": (["white", "black", "red", "green", "blue", "gray"], {"default": "black"}),
+                "smoothness": ("INT", {"default": 0, "step": 1, "min": 0, "max": 500}),
+                "divisible_by": ("INT", {"default": 2, "min": 1, "max": 512, "step": 1}),
+                "auto_pad": (["None", "auto_square", "target_WxH"], {"default": "None"}),
+                "pad_position": (["left-top", "mid-top", "right-top", "left-center", "mid-center", "right-center", "left-bottom", "mid-bottom", "right-bottom"], {"default": "mid-center"}),               
+                "target_W": ("INT", {"default": 512, "min": 1, "max": 14096, "step": 1}),
+                "target_H": ("INT", {"default": 512, "min": 1, "max": 14096, "step": 1}),
+                "pad_mask_remove": ("BOOLEAN", {"default": True,}),
+            },
+            "optional": {
+                "image": ("IMAGE",),
+                "mask": ("MASK",),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "MASK", "STITCH4")
+    RETURN_NAMES = ("image", "mask", "stitch")
+    FUNCTION = "process"
+    CATEGORY = "Apt_Preset/image"
+    DESCRIPTION = """
+    - bg_color: 填充的颜色
+    - smoothness: 遮罩边缘平滑
+    - divisible_by: 输出图像尺寸需整除的值
+    - auto_pad自动填充:None表示关闭自动填充
+    - auto_square按长边填充成正方形，target_WxH按输入的宽高填充
+    """
+
+    def process(self, left, top, right, bottom, bg_color, smoothness, divisible_by, auto_pad, target_W, target_H, pad_position, pad_mask_remove, image=None, mask=None):
+        if image is None:
+            return (None, None, {})
+            
+        original_shape = (image.shape[1], image.shape[2])
+        original_left, original_top, original_right, original_bottom = left, top, right, bottom
+        original_image = image.clone()
+        device = image.device
+
+        if auto_pad == "auto_square":
+            image, mask, left, top, right, bottom = self.auto_padding(image, mask, left, top, right, bottom, pad_position)
+        elif auto_pad == "target_WxH":
+            image, mask, left, top, right, bottom = self.target_padding(image, mask, left, top, right, bottom, target_W, target_H, pad_position)
+
+        cropped_image, cropped_mask = self.crop_image(image, mask, left, top, right, bottom)
+        padded_image, actual_left, actual_top, actual_right, actual_bottom = self.add_padding(
+            cropped_image, max(left, 0), max(top, 0), max(right, 0), max(bottom, 0), bg_color, divisible_by)
+        
+        final_mask, padding_mask = self.create_mask_optimized(
+            cropped_image.shape[1:3],
+            actual_left, actual_top, actual_right, actual_bottom,
+            smoothness, cropped_mask, divisible_by, device,
+            mask is not None, padded_image.shape[0]
+        )
+        
+        if pad_mask_remove:
+            original_region = (1 - padding_mask) > 0.5
+            final_mask = final_mask * original_region.float()
+        
+        crop_offset_left = max(-left, 0)
+        crop_offset_top = max(-top, 0)
+        
+        pad_info = (original_left, original_top, original_right, original_bottom,
+                    actual_left, actual_top, actual_right, actual_bottom)
+        
+        stitch_info = {
+            "original_image": original_image,
+            "original_shape": original_shape,
+            "pad_info": pad_info,
+            "crop_offsets": (crop_offset_left, crop_offset_top),
+            "bg_color": bg_color,
+            "has_mask": mask is not None,
+            "original_mask": mask.clone() if mask is not None else None
+        }
+        
+        return (padded_image, final_mask, stitch_info)
+
+    def create_mask_optimized(self, img_size, left, top, right, bottom, smoothness, mask, divisible_by, device, has_mask, batch_size):
+        img_h, img_w = img_size
+        target_width = img_w + left + right
+        target_height = img_h + top + bottom
+        
+        if divisible_by > 1:
+            target_width = math.ceil(target_width / divisible_by) * divisible_by
+            target_height = math.ceil(target_height / divisible_by) * divisible_by
+            adjusted_right = target_width - img_w - left
+            adjusted_bottom = target_height - img_h - top
+        else:
+            adjusted_right = right
+            adjusted_bottom = bottom
+        
+        final_masks = torch.zeros((batch_size, target_height, target_width), dtype=torch.float32, device=device)
+        padding_masks = torch.ones((batch_size, target_height, target_width), dtype=torch.float32, device=device)
+        
+        start_y, end_y = top, top + img_h
+        start_x, end_x = left, left + img_w
+        
+        start_y = max(0, start_y)
+        end_y = min(target_height, end_y)
+        start_x = max(0, start_x)
+        end_x = min(target_width, end_x)
+        
+        if has_mask and mask is not None:
+            mask_h, mask_w = mask.shape[1], mask.shape[2]
+            
+            mask_start_y = start_y
+            mask_end_y = start_y + mask_h
+            mask_start_x = start_x
+            mask_end_x = start_x + mask_w
+            
+            mask_start_y = max(0, mask_start_y)
+            mask_end_y = min(target_height, mask_end_y)
+            mask_start_x = max(0, mask_start_x)
+            mask_end_x = min(target_width, mask_end_x)
+            
+            inner_start_y = max(0, start_y - mask_start_y)
+            inner_end_y = inner_start_y + (mask_end_y - mask_start_y)
+            inner_start_x = max(0, start_x - mask_start_x)
+            inner_end_x = inner_start_x + (mask_end_x - mask_start_x)
+            
+            if mask.shape[0] != batch_size:
+                mask = mask.repeat(batch_size, 1, 1)[:batch_size]
+            
+            final_masks[:, mask_start_y:mask_end_y, mask_start_x:mask_end_x] = mask[:, inner_start_y:inner_end_y, inner_start_x:inner_end_x]
+        else:
+            final_masks[:, start_y:end_y, start_x:end_x] = 1.0
+        
+        padding_masks[:, start_y:end_y, start_x:end_x] = 0.0
+        
+        if smoothness > 0 and smoothness <= 500:
+            final_masks = self.batch_smooth_mask(final_masks, smoothness, device)
+            padding_masks = self.batch_smooth_mask(padding_masks, smoothness, device)
+        
+        final_masks = torch.clamp(final_masks, 0.0, 1.0)
+        padding_masks = torch.clamp(padding_masks, 0.0, 1.0)
+        
+        return final_masks, padding_masks
+
+    def batch_smooth_mask(self, mask_tensor, smoothness, device):
+        kernel_size = max(3, smoothness * 2 + 1)
+        
+        sigma = smoothness / 3.0
+        x = torch.arange(-kernel_size//2 + 1, kernel_size//2 + 1, device=device)
+        kernel = torch.exp(-(x**2) / (2 * sigma**2))
+        kernel = kernel / kernel.sum()
+        
+        kernel_2d = kernel.unsqueeze(1) * kernel.unsqueeze(0)
+        kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0)
+        
+        mask_tensor = mask_tensor.unsqueeze(1)
+        smoothed = torch.nn.functional.conv2d(
+            mask_tensor, 
+            kernel_2d, 
+            padding=kernel_size//2
+        )
+        return smoothed.squeeze(1)
+
+    def target_padding(self, image, mask, left, top, right, bottom, target_W, target_H, pad_position):
+        batch_size, height, width, _ = image.shape
+        
+        delta_width = target_W - width
+        delta_height = target_H - height
+        
+        left_pad, right_pad, top_pad, bottom_pad = self.calculate_padding_or_cropping(delta_width, delta_height, pad_position)
+        
+        new_left = left + left_pad
+        new_right = right + right_pad
+        new_top = top + top_pad
+        new_bottom = bottom + bottom_pad
+        
+        return image, mask, new_left, new_top, new_right, new_bottom
+    
+    def calculate_padding_or_cropping(self, delta_width, delta_height, pad_position):
+        parts = pad_position.split('-')
+        if len(parts) != 2:
+            left_pad, right_pad = self.calculate_horizontal_adjustment(delta_width, "mid")
+            top_pad, bottom_pad = self.calculate_vertical_adjustment(delta_height, "center")
+            return left_pad, right_pad, top_pad, bottom_pad
+        
+        horizontal_pos, vertical_pos = parts
+        
+        left_pad, right_pad = self.calculate_horizontal_adjustment(delta_width, horizontal_pos)
+        top_pad, bottom_pad = self.calculate_vertical_adjustment(delta_height, vertical_pos)
+        
+        return left_pad, right_pad, top_pad, bottom_pad
+    
+    def calculate_horizontal_adjustment(self, delta_width, position):
+        if delta_width >= 0:
+            if position == "left":
+                return delta_width, 0
+            elif position == "right":
+                return 0, delta_width
+            elif position == "mid":
+                left = delta_width // 2
+                right = delta_width - left
+                return left, right
+            else:
+                left = delta_width // 2
+                right = delta_width - left
+                return left, right
+        else:
+            crop_width = -delta_width
+            if position == "left":
+                return -crop_width, 0
+            elif position == "right":
+                return 0, -crop_width
+            elif position == "mid":
+                left = crop_width // 2
+                right = crop_width - left
+                return -left, -right
+            else:
+                left = crop_width // 2
+                right = crop_width - left
+                return -left, -right
+    
+    def calculate_vertical_adjustment(self, delta_height, position):
+        if delta_height >= 0:
+            if position == "top":
+                return delta_height, 0
+            elif position == "bottom":
+                return 0, delta_height
+            elif position == "center":
+                top = delta_height // 2
+                bottom = delta_height - top
+                return top, bottom
+            else:
+                top = delta_height // 2
+                bottom = delta_height - top
+                return top, bottom
+        else:
+            crop_height = -delta_height
+            if position == "top":
+                return -crop_height, 0
+            elif position == "bottom":
+                return 0, -crop_height
+            elif position == "center":
+                top = crop_height // 2
+                bottom = crop_height - top
+                return -top, -bottom
+            else:
+                top = crop_height // 2
+                bottom = crop_height - top
+                return -top, -bottom
+
+    def auto_padding(self, image, mask, left, top, right, bottom, pad_position):
+        batch_size, height, width, _ = image.shape
+        target_size = max(width, height)
+        delta_width = target_size - width
+        delta_height = target_size - height
+        
+        left_pad, right_pad, top_pad, bottom_pad = self.calculate_padding_or_cropping(delta_width, delta_height, pad_position)
+        
+        new_left = left + left_pad
+        new_right = right + right_pad
+        new_top = top + top_pad
+        new_bottom = bottom + bottom_pad
+        
+        return image, mask, new_left, new_top, new_right, new_bottom
+
+    def crop_image(self, image, mask, left, top, right, bottom):
+        crop_left = max(-left, 0)
+        crop_top = max(-top, 0)
+        crop_right = max(-right, 0)
+        crop_bottom = max(-bottom, 0)
+        
+        batch_size, height, width, channels = image.shape
+        
+        new_left = min(max(crop_left, 0), width)
+        new_top = min(max(crop_top, 0), height)
+        new_right = max(min(width - crop_right, width), new_left)
+        new_bottom = max(min(height - crop_bottom, height), new_top)
+        
+        cropped_images = image[:, new_top:new_bottom, new_left:new_right, :]
+        
+        cropped_masks = None
+        if mask is not None and isinstance(mask, torch.Tensor):
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(0)
+            if mask.dim() == 3:
+                mask_h, mask_w = mask.shape[-2], mask.shape[-1]
+                
+                mask_new_left = min(max(crop_left, 0), mask_w)
+                mask_new_top = min(max(crop_top, 0), mask_h)
+                mask_new_right = max(min(mask_w - crop_right, mask_w), mask_new_left)
+                mask_new_bottom = max(min(mask_h - crop_bottom, mask_h), mask_new_top)
+                
+                if mask.shape[0] != batch_size:
+                    mask = mask.repeat(batch_size, 1, 1)[:batch_size]
+                
+                cropped_masks = mask[:, mask_new_top:mask_new_bottom, mask_new_left:mask_new_right]
+        
+        return cropped_images, cropped_masks
+
+    def add_padding(self, image, left, top, right, bottom, bg_color, divisible_by=1):
+        color_map = {
+            "white": (1.0, 1.0, 1.0),
+            "black": (0.0, 0.0, 0.0),
+            "red": (1.0, 0.0, 0.0),
+            "green": (0.0, 1.0, 0.0),
+            "blue": (0.0, 0.0, 1.0),
+            "gray": (128.0/255.0, 128.0/255.0, 128.0/255.0)
+        }
+        color = color_map.get(bg_color, (0.0, 0.0, 0.0))
+        
+        batch_size, height, width, channels = image.shape
+        device = image.device
+        
+        target_width = width + left + right
+        target_height = height + top + bottom
+        
+        if divisible_by > 1:
+            target_width = math.ceil(target_width / divisible_by) * divisible_by
+            target_height = math.ceil(target_height / divisible_by) * divisible_by
+            adjusted_right = target_width - width - left
+            adjusted_bottom = target_height - height - top
+        else:
+            adjusted_right = right
+            adjusted_bottom = bottom
+        
+        padded_image = torch.full((batch_size, target_height, target_width, channels), 
+                                color[0], dtype=image.dtype, device=device)
+        
+        padded_image[:, :, :, 1] = color[1]
+        padded_image[:, :, :, 2] = color[2]
+        
+        padded_image[:, top:top+height, left:left+width, :] = image
+        
+        return padded_image, left, top, adjusted_right, adjusted_bottom
+
+
+#endregion-----pad组---------------
+
+
+
+
+
+
+
+
 
 
 
