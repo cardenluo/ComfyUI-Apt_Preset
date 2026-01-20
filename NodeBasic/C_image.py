@@ -5441,8 +5441,6 @@ class Image_safe_size:
         return cropped
 
 
-
-
 class Image_smooth_blur:
     @classmethod
     def INPUT_TYPES(s):
@@ -7509,6 +7507,8 @@ class Image_transform_layer_adv:
 
 
 
+
+
 class color_select:
     @classmethod
     def INPUT_TYPES(cls):
@@ -7565,6 +7565,7 @@ class color_select:
 
 
 #region-----pad组---------------
+
 
 class STITCH4:
     pass
@@ -7750,9 +7751,16 @@ class Image_pad_adjust:
             mask is not None, padded_image.shape[0]
         )
         
+        # 修复 pad_mask_remove 逻辑
         if pad_mask_remove:
+            # 当 pad_mask_remove 为 True 时：只保留原始图像区域的 mask，填充区域置 0
             original_region = (1 - padding_mask) > 0.5
             final_mask = final_mask * original_region.float()
+        else:
+            # 当 pad_mask_remove 为 False 时：保留完整的 mask（包括填充区域）
+            # 把填充区域的 mask 值恢复为 1（和原逻辑一致）
+            padding_region = padding_mask > 0.5
+            final_mask = torch.where(padding_region, torch.ones_like(final_mask), final_mask)
         
         crop_offset_left = max(-left, 0)
         crop_offset_top = max(-top, 0)
@@ -7786,7 +7794,9 @@ class Image_pad_adjust:
             adjusted_right = right
             adjusted_bottom = bottom
         
-        final_masks = torch.zeros((batch_size, target_height, target_width), dtype=torch.float32, device=device)
+        # 恢复原逻辑：初始 mask 全部为 1（填充区和原始区都为 1）
+        final_masks = torch.ones((batch_size, target_height, target_width), dtype=torch.float32, device=device)
+        # padding_mask：原始区域为 0，填充区域为 1（这个逻辑保持不变）
         padding_masks = torch.ones((batch_size, target_height, target_width), dtype=torch.float32, device=device)
         
         start_y, end_y = top, top + img_h
@@ -7798,6 +7808,7 @@ class Image_pad_adjust:
         end_x = min(target_width, end_x)
         
         if has_mask and mask is not None:
+            # 有输入 mask 时：用输入的 mask 覆盖原始区域
             mask_h, mask_w = mask.shape[1], mask.shape[2]
             
             mask_start_y = start_y
@@ -7820,8 +7831,10 @@ class Image_pad_adjust:
             
             final_masks[:, mask_start_y:mask_end_y, mask_start_x:mask_end_x] = mask[:, inner_start_y:inner_end_y, inner_start_x:inner_end_x]
         else:
-            final_masks[:, start_y:end_y, start_x:end_x] = 1.0
+            # 无输入 mask 时：原始区域保持 1（无需修改）
+            pass
         
+        # padding_mask 标记原始区域为 0
         padding_masks[:, start_y:end_y, start_x:end_x] = 0.0
         
         if smoothness > 0 and smoothness <= 500:
@@ -8025,6 +8038,8 @@ class Image_pad_adjust:
         return padded_image, left, top, adjusted_right, adjusted_bottom
 
 
+
+
 #endregion-----pad组---------------
 
 
@@ -8034,6 +8049,79 @@ class Image_pad_adjust:
 
 
 
+
+class Image_Fragment:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "fragment_width": ("INT", {"default": 64, "min": 8, "max": 512, "step": 8}),
+                "fragment_height": ("INT", {"default": 64, "min": 8, "max": 512, "step": 8}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "recombine_image_fragments"
+    CATEGORY = "Apt_Preset/image/color_adjust"
+
+    def split_into_fragments(self, image, fragment_size):
+        h, w = image.shape[:2]
+        fh, fw = fragment_size
+        fragments = []
+        
+        for y in range(0, h - fh + 1, fh):
+            for x in range(0, w - fw + 1, fw):
+                fragment = image[y:y+fh, x:x+fw]
+                fragments.append(fragment)
+        
+        return fragments, (fh, fw), (h // fh, w // fw)
+
+    def recombine_fragments(self, fragments, fragment_size, grid_size, seed):
+        if not fragments:
+            raise ValueError("图像碎片列表不能为空")
+        
+        random.seed(seed)
+        random.shuffle(fragments)
+        
+        fh, fw = fragment_size
+        rows, cols = grid_size
+        recombined = np.zeros((rows * fh, cols * fw, 3), dtype=np.uint8)
+        
+        idx = 0
+        for y in range(rows):
+            for x in range(cols):
+                if idx < len(fragments):
+                    recombined[y*fh:(y+1)*fh, x*fw:(x+1)*fw] = fragments[idx]
+                idx += 1
+        
+        return recombined
+
+    def recombine_image_fragments(self, image, fragment_width, fragment_height, seed):
+        recombine_mode = "random"
+        
+        # 优化：增加类型判断，兼容不同输入类型
+        if isinstance(image, torch.Tensor):
+            image_np = 255.0 * image[0].cpu().numpy()
+        else:
+            image_np = 255.0 * image[0]
+        image_np = image_np.astype(np.uint8)
+        
+        fragments, frag_size, grid_size = self.split_into_fragments(image_np, (fragment_height, fragment_width))
+        recombined_image = self.recombine_fragments(fragments, frag_size, grid_size, seed)
+        
+        # 转换为ComfyUI标准格式：float32 + 增加batch维度 + 转Tensor
+        recombined_image = recombined_image.astype(np.float32) / 255.0
+        # 关键修改1：调整维度顺序（ComfyUI的IMAGE格式是 [batch, height, width, channels]）
+        # 确保维度正确（有些情况下可能需要调整为 [H, W, C] -> [1, H, W, C]）
+        if len(recombined_image.shape) == 3:
+            recombined_image = np.expand_dims(recombined_image, axis=0)
+        # 关键修改2：将numpy数组转换为PyTorch张量（这是修复报错的核心）
+        recombined_image_tensor = torch.from_numpy(recombined_image)
+        
+        # 返回Tensor而不是numpy数组
+        return (recombined_image_tensor,)
 
 
 
