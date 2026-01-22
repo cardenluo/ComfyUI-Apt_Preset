@@ -3007,7 +3007,6 @@ try:
     nunchaku_module = importlib.import_module("ComfyUI-nunchaku.nodes.models.flux")
     NunchakuFluxDiTLoader = nunchaku_module.NunchakuFluxDiTLoader
 except ImportError as e:
-    print(f"导入ComfyUI-nunchaku.nodes.models.flux错误: {e}")
     NunchakuFluxDiTLoader = None
 except AttributeError:
     NunchakuFluxDiTLoader = None
@@ -3016,7 +3015,6 @@ try:
     nunchaku_module_edit = importlib.import_module("ComfyUI-nunchaku.nodes.models.qwenimage")
     NunchakuQwenImageDiTLoader = nunchaku_module_edit.NunchakuQwenImageDiTLoader
 except ImportError as e:
-    print(f"导入ComfyUI-nunchaku.nodes.qwenimage错误: {e}")
     NunchakuQwenImageDiTLoader = None
 except AttributeError:
     NunchakuQwenImageDiTLoader = None
