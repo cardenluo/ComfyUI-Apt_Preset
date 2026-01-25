@@ -39,6 +39,8 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.01.17  sum_load and sum_edit are compatible with the latent size of Flux2_Klein
 
+2025.1.25  Add an image batch loading manager：IO_LoadImgList
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
