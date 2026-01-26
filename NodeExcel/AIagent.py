@@ -696,7 +696,7 @@ else:
             break
         current_file = parent_dir
     if COMFYUI_ROOT is None:
-        COMFYUI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        COMFYUI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 OLLAMA_MODEL_PATH = None
 try:
