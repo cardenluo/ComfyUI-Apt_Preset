@@ -9,26 +9,6 @@
 
 # <font color="#000000"> 一、Update record更新记录</font>
 
-2025.11.2  添加，输入_文本，输出_文本，支持多种格式的文本读取和存放
-           添加sum_sampler总采样器，可以在一个采样器上实现多次方式的切换
-           
-2025.11.24 增加API调用Qwen模型，AI_Qwen、AI_Qwen_text ，或本地调用Qwen模型
-           AI_Ollama_image，AI_Ollama_text
-
-2025.11.25 快速debug增加update按钮 view Data，view_mask, view_GetShape,view_Mask_And_Img
-
-2025.11.29  添加节点: AI_Ollama_image and AI_Ollama_text
-           下载模型放到下面的路径  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
-
-2025.11.30  添加节点：排版_文本绘制 
-
-2025.12.1  一些节点将使用资源[扩展包](#AAA)
-
-2025.12.4 修复sum_load 支持 z-image-gguf   
-增加坐标系列节点 Coordinate_SplitIndex,Coordinate_Generator,Coordinate_fromImage,Coordinate_MarkRender,Coordinate_fromMask,Coordinate_pointCombine,
-
-2025.1.5  更新sum_stack_QwenEditPlus增加参考图的控制强度。优化sum_load_adv增加缓存机制和清理缓存的节点。不再强制要求在sum_edit上调节，除模型之外的参数在加载器上修改速度也很快。
-
 2025.1.8  更新流程组节点
 
 2025.1.14 优化sum_load支持缓存和清理，AI_GLM更新支持GLM 4.7新模型，流程组增加判断节点
@@ -36,9 +16,10 @@
 2025.1.14 sum_load，sum_edit兼容 Flux2_Klein 的latent尺寸
 
 2025.1.25 增加图像批量加载管理器
+
 <img width="1622" height="729" alt="image" src="https://github.com/user-attachments/assets/c5802354-a827-4719-9dce-aa39815f062d" />
 
-
+2025.1.31 更新IO_LoadImgList支持桥接，操作更强大
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
