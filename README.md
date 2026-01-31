@@ -11,35 +11,13 @@ The current workflow connections are becoming increasingly dense, making them di
 
 # I. Update Record
 
-
-2025.11.2 Add, input_text, output_text, support reading and storing text in multiple formats
-          add sum_ksample Includes the switching of multiple sampling methods
-
-2025.11.24 Add API calls to the Qwen model, AI_Qwen, AI_Qwen_text, 
-           or local calls to the Qwen model: AI_Ollama_image, AI_Ollama_text
-
-2025.11.25  Quickly debug and add an update button: view Data, view_mask, view_GetShape, view_Mask_And_Img
-
-2025.11.29  add nodes: AI_Ollama_image and AI_Ollama_text
-            download and put at  "...comfyui\models\ollama"  [Download model](https://pan.quark.cn/s/2ebc8e5958ef).
-
-2025.11.30 add nodes" lay text sum "  Can achieve various effects of text
-
-2025.12.1  Some nodes will use the resource [expansion pack.](#AAA)
-
-2025.12.4 fix sum_load  support z-image-gguf   
-          add new Coordinate series nodes  Coordinate_SplitIndex,Coordinate_Generator,Coordinate_fromImage,Coordinate_MarkRender,Coordinate_fromMask,Coordinate_pointCombine,
-
-
-2025.1.5  Update sum_stack_QwenEditPlus to increase the control intensity of reference images. Optimize sum_load_adv by adding a caching mechanism and nodes for clearing the cache. It is no longer mandatory to adjust in the upper area of sum_edit; parameters other than the model can be modified quickly on the loader.
-
-2025.1.8   update flow team nodes 
-
 2025.1.14  Optimize sum_load to support caching and cleaning, update AI_GLM to support the new GLM 4.7 model, and add judgment nodes to the process group
 
 2025.01.17  sum_load and sum_edit are compatible with the latent size of Flux2_Klein
 
 2025.1.25  Add an image batch loading manager：IO_LoadImgList
+
+2025.1.31  update IO_LoadImgList Supports bridging, with more powerful operations
 
 # II. Usage Guide
 
