@@ -1,0 +1,34 @@
+# 官方已有的依赖库（随官方版本）
+#numpy   
+#torch  
+#Pillow 
+#spandrel 
+#einops 
+#torchvision 
+#transformers  #官方有版本要求
+#sentencepiece 
+#aiohttp  #官方有版本要求
+pyyaml>=6.0 
+
+# 非官方依赖库-必装
+toml
+opencv-python #导入名CV2
+tqdm
+onnxruntime
+matplotlib
+scipy
+openpyxl
+watchdog>=3.0.0
+gguf>=0.13.0
+protobuf #gguf
+
+# 非官方依赖库-选装，如果不需要可删除，只会影响个别功能
+ultralytics #选装,仅标签检测节点在用
+rembg  #选装，仅背景移除1.0用
+transparent-background #选装，仅背景移除2.0用，导入名transparent_background
+pandas #选装，仅音频AMP归一化用
+pydub  #选装，仅音频AMP归一化用
+toolz  #选装，仅关键帧提示词调度，技术已淘汰，准备删除
+sortedcontainers #选装，仅关键帧提示词调度，技术已淘汰，准备删除
+
+ 
