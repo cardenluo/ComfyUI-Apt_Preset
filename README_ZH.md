@@ -17,6 +17,8 @@
 
 2025.1.25 增加图像批量加载管理器
 
+2025.3.13 增加 LTX2.3 视频融合节点: AD_video_merge
+
 <img width="1622" height="729" alt="image" src="https://github.com/user-attachments/assets/c5802354-a827-4719-9dce-aa39815f062d" />
 
 2025.1.31 更新IO_LoadImgList支持桥接，操作更强大
