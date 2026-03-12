@@ -19,6 +19,8 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2025.1.31  update IO_LoadImgList Supports bridging, with more powerful operations
 
+2025.3.13 add LTX2.3 video_merge: AD_video_merge
+
 # II. Usage Guide
 
 ## 1. Universal Loader Sum_load_adv, Supports GGUF Models
