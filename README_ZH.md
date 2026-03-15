@@ -21,7 +21,10 @@
 
 <img width="1622" height="729" alt="image" src="https://github.com/user-attachments/assets/c5802354-a827-4719-9dce-aa39815f062d" />
 
-2025.1.31 更新IO_LoadImgList支持桥接，操作更强大
+2026.3.15 添加可视化批量加载节点：IO_LoadImgBatch、IO_LoadTextBatch、IO_LoadShotBatch
+
+
+
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
