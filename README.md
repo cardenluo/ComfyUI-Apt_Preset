@@ -21,7 +21,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 2026.3.13 add LTX2.3 video_merge: AD_video_merge
 
-2026.3.15 增加可视化批次加载节点 IO_LoadImgBatch、IO_LoadTextBatch、IO_LoadShotBatch
+2026.3.15 Add visualization batch loading nodes ：IO_LoadImgBatch、IO_LoadTextBatch、IO_LoadShotBatch
 
 
 
