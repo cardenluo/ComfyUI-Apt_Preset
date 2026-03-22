@@ -19,8 +19,11 @@
 
 2025.3.13 增加 LTX2.3 视频融合节点: AD_video_merge
 
-2026.3.15 添加可视化批量加载节点：IO_LoadImgBatch、IO_LoadTextBatch、IO_LoadShotBatch
+2026.3.15 增加可视化批量加载节点：IO_LoadImgBatch、IO_LoadTextBatch、IO_LoadShotBatch
 
+2026.3.22 增加图像编辑与可视化节点
+
+<img width="2094" height="937" alt="image" src="https://github.com/user-attachments/assets/a36d6361-8db8-446a-b5f1-17780ca289bc" />
 
 
             
