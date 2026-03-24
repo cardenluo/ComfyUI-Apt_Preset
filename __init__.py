@@ -415,6 +415,7 @@ NODE_CLASS_MAPPINGS= {
 
 
 "color_ImageCurve": color_ImageCurve,
+"Image_crop_visual": Image_crop_visual,
 "color_RadiaGradient_visual": color_RadiaGradient_visual,
 "color_lineGradient_visual": color_lineGradient_visual,
 "Image_Detail_HL_frequencye_visual": Image_Detail_HL_frequencye_visual,
@@ -422,6 +423,8 @@ NODE_CLASS_MAPPINGS= {
 "color_adjust_HSL_visual": color_adjust_HSL_visual,
 "color_adjust_HDR_visual": color_adjust_HDR_visual,
 "color_match_adv_visual":color_match_adv_visual,
+
+
 "color_select": color_select,  
 
 #---ImgBatch-------------------------------------------
