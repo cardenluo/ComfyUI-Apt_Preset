@@ -199,6 +199,9 @@ class RMBGModel(BaseModelLoader):
 
                     module_name = f"custom_birefnet_model_{hash(birefnet_path)}"
                     module = types.ModuleType(module_name)
+                    module.__file__ = birefnet_path
+                    module.__dict__["__file__"] = birefnet_path
+                    module.__package__ = ""
                     sys.modules[module_name] = module
                     exec(birefnet_content, module.__dict__)
 
@@ -232,16 +235,46 @@ class RMBGModel(BaseModelLoader):
                 except Exception as modern_e:
                     print(f"[RMBG INFO] Using standard transformers loading (fallback mode)...")
                     try:
-                        self.model = AutoModelForImageSegmentation.from_pretrained(
-                            cache_dir,
-                            trust_remote_code=True,
-                            local_files_only=True
-                        )
+                        try:
+                            self.model = AutoModelForImageSegmentation.from_pretrained(
+                                cache_dir,
+                                trust_remote_code=True,
+                                local_files_only=True,
+                                low_cpu_mem_usage=False
+                            )
+                        except TypeError:
+                            self.model = AutoModelForImageSegmentation.from_pretrained(
+                                cache_dir,
+                                trust_remote_code=True,
+                                local_files_only=True
+                            )
                     except Exception as standard_e:
                         handle_model_error(f"Failed to load model with both modern and standard methods. Modern error: {str(modern_e)}. Standard error: {str(standard_e)}")
 
             except Exception as e:
                 handle_model_error(f"Error loading model: {str(e)}")
+
+            if any(getattr(param, "is_meta", False) for param in self.model.parameters()):
+                weights_path = os.path.join(cache_dir, "model.safetensors")
+                pytorch_weights = os.path.join(cache_dir, "pytorch_model.bin")
+                try:
+                    if os.path.exists(weights_path):
+                        try:
+                            import safetensors.torch
+                            state_dict = safetensors.torch.load_file(weights_path)
+                        except ImportError:
+                            from transformers.modeling_utils import load_state_dict
+                            state_dict = load_state_dict(weights_path)
+                    elif os.path.exists(pytorch_weights):
+                        state_dict = torch.load(pytorch_weights, map_location="cpu")
+                    else:
+                        state_dict = None
+                    if state_dict is not None:
+                        if hasattr(self.model, "to_empty"):
+                            self.model.to_empty(device="cpu")
+                        self.model.load_state_dict(state_dict, strict=False)
+                except Exception as e:
+                    handle_model_error(f"Failed to materialize meta tensors: {str(e)}")
 
             self.model.eval()
             for param in self.model.parameters():
@@ -365,12 +398,20 @@ class BEN2Model(BaseModelLoader):
                 
                 spec = importlib.util.spec_from_file_location(module_name, model_path)
                 ben2_module = importlib.util.module_from_spec(spec)
+                ben2_module.__file__ = model_path
                 sys.modules[module_name] = ben2_module
                 spec.loader.exec_module(ben2_module)
                 
                 model_weights_path = os.path.join(cache_dir, "BEN2_Base.pth")
                 self.model = ben2_module.BEN_Base()
-                self.model.loadcheckpoints(model_weights_path)
+                if any(getattr(param, "is_meta", False) for param in self.model.parameters()):
+                    if hasattr(self.model, "to_empty"):
+                        self.model.to_empty(device="cpu")
+                try:
+                    self.model.loadcheckpoints(model_weights_path)
+                except TypeError:
+                    checkpoint = torch.load(model_weights_path, map_location="cpu")
+                    self.model.load_state_dict(checkpoint.get("model_state_dict", checkpoint), strict=True)
                 
                 self.model.eval()
                 for param in self.model.parameters():
