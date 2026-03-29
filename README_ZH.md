@@ -25,7 +25,7 @@
 
 <img width="2094" height="937" alt="image" src="https://github.com/user-attachments/assets/a36d6361-8db8-446a-b5f1-17780ca289bc" />
 
-
+2026.3.29 增加视频自动分割节点"AD_VideoSeg": AD_VideoSeg,
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
