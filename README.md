@@ -26,6 +26,7 @@ The current workflow connections are becoming increasingly dense, making them di
 2026.3.22 Add image editing and visualization nodes
 
 <img width="2028" height="868" alt="image" src="https://github.com/user-attachments/assets/bd2f2bb4-b82d-4297-bff8-cb40f46bbff2" />
+2026.3.29 Add  Automatic Video Segmentation Node ："AD_VideoSeg": AD_VideoSeg,
 
 
 # II. Usage Guide
