@@ -1,0 +1,387 @@
+丝绸 Silk:
+  negative: rough texture, dull and lackluster, stiff feel, blur
+  prompt: silk material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as smooth and flowing texture,
+    lustrous and iridescent color sheen, delicate and fine - woven patterns, soft
+    and slippery touch, best quality, masterpiece, realistic, ultra-fine painting
+丝绸质感 Silk Texture:
+  negative: Rough, dull texture, lack of smoothness and sheen, non - flowing material,
+    blur
+  prompt: silk texture style {prompt} Smooth, slippery, and with a gentle sheen, it has
+    a luxurious and elegant feel. The fabric flows gracefully, like a silk scarf or
+    a formal silk dress, best quality, masterpiece, realistic, ultra-fine painting
+亚光木材:
+  prompt: matte wood
+亚光质感 Matte Texture:
+  negative: Glossy, shiny surface, strong reflection of light, lack of the matte -
+    like subdued appearance, blur
+  prompt: matte texture style {prompt} A non - shiny, flat - looking surface that diffuses
+    light rather than reflecting it directly. Gives a more understated, sophisticated
+    look, with a smooth or slightly textured feel, best quality, masterpiece, realistic,
+    ultra-fine painting
+亚面不锈钢:
+  prompt: matte stainless steel
+亚面石材:
+  prompt: subsurface stone
+亮光木材:
+  prompt: shiny wood
+像素艺术 - Pixel Art:
+  negative: sloppy, messy, blurry, noisy, highly detailed, ultra textured, photo,
+    realistic, blur
+  prompt: pixel-art {prompt} low-res, blocky, pixel art style, 8-bit graphics, best quality,
+    masterpiece, realistic, ultra-fine painting
+光滑质感 Smooth Texture:
+  negative: Rough, uneven texture, presence of bumps or irregularities, non - uniform
+    light reflection, blur
+  prompt: smooth texture style {prompt} The surface appears sleek, without any roughness
+    or bumps. It reflects light evenly, giving a clean and refined look, such as a
+    polished marble floor or a shiny metal surface, best quality, masterpiece, realistic,
+    ultra-fine painting
+全息投影:
+  prompt: hologram
+冰块:
+  prompt: ice
+发光霓虹:
+  prompt: neon glow
+古铜色金属:
+  prompt: antique bronze metal
+坚硬质感 Hard Texture:
+  negative: Soft, flexible texture, easily deformable material, lack of hardness and
+    solidity, blur
+  prompt: hard texture style {prompt} The surface is firm, resistant to pressure, and
+    has a solid, unyielding feel. It can convey strength and durability, like a block
+    of granite or a metal tool, best quality, masterpiece, realistic, ultra-fine painting
+塑料 Plastic:
+  negative: wood texture, soft texture, natural material colors, blur
+  prompt: plastic material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as smooth and hard surface, bright
+    and vivid color options, possible molded - in patterns, semi - transparent or
+    opaque qualities, best quality, masterpiece, realistic, ultra-fine painting
+塑料质感 Plastic Texture:
+  negative: Rough, natural - material texture, heavy weight, absence of the characteristic
+    plastic sheen and synthetic appearance, blur
+  prompt: plastic texture style {prompt} Smooth, sometimes glossy surface, lightweight
+    and often with a variety of colors and transparency levels. Can have a synthetic
+    look and feel, with possible injection - molding marks, best quality, masterpiece,
+    realistic, ultra-fine painting
+墙纸（花纹）:
+  prompt: patterned wallpaper
+大理石:
+  prompt: marble
+大理石蛋糕:
+  prompt: marble cake
+尼龙 Nylon:
+  negative: rough and easy - to - break, soft and non - elastic, non - nylon colors,
+    blur
+  prompt: nylon material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as smooth and strong texture,
+    shiny surface with a range of color options, visible weave or braided patterns,
+    elastic and durable nature, best quality, masterpiece, realistic, ultra-fine painting
+岩石（花岗岩）:
+  prompt: granite rock
+巧克力:
+  prompt: chocolate
+彩色玻璃:
+  prompt: stained glass
+手工粘土 - Craft Clay:
+  negative: sloppy, messy, grainy, highly detailed, ultra textured, photo, blur
+  prompt: play-doh style {prompt} sculpture, clay art, centered composition, Claymation,
+    best quality, masterpiece, realistic, ultra-fine painting
+抛光砖:
+  prompt: polished tile
+拉丝不锈钢:
+  prompt: brushed stainless steel
+拼贴 - Papercraft Collage:
+  negative: ugly, deformed, noisy, blurry, low contrast, realism, photorealistic,
+    blur
+  prompt: collage style {prompt} mixed media, layered, textural, detailed, artistic, best
+    quality, masterpiece, realistic, ultra-fine painting
+普通布料:
+  prompt: ordinary fabric
+木地板:
+  prompt: wooden floor
+木材 Wood:
+  negative: plastic texture, metallic sheen, smooth and texture - less surface, blur
+  prompt: wood material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as distinct wood grain patterns,
+    warm and tactile texture, natural color variations, smooth - yet - textured surface
+    with occasional knots, best quality, masterpiece, realistic, ultra-fine painting
+木纹桌面:
+  prompt: wooden tabletop
+果冻（凝胶）:
+  prompt: jelly gel
+柔软质感 Soft Texture:
+  negative: Hard, rigid texture, lack of flexibility, rough and unyielding feel, blur
+  prompt: soft texture style {prompt} The material feels gentle and yielding to the touch,
+    with a flexible and plush quality. It often gives a sense of comfort, such as
+    a soft blanket or a cushion, best quality, masterpiece, realistic, ultra-fine
+    painting
+树叶:
+  prompt: tree leaves
+树皮:
+  prompt: tree bark
+树脂材料 Resin Material:
+  negative: Rough texture, opaque and dull look, heavy - feeling material not characteristic
+    of resin, blur
+  prompt: resin material style {prompt} Smooth, glossy surface often with a slightly translucent
+    quality, ability to take on various colors vividly, can have a lightweight feel
+    despite its solid - looking appearance, best quality, masterpiece, realistic,
+    ultra-fine painting
+棉花 Cotton:
+  negative: rough and uneven, thick texture, non - cotton colors, blur
+  prompt: cotton material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as soft and lightweight texture,
+    pure white or natural - hued color, visible cotton fiber strands, smooth and breathable
+    fabric - like quality, best quality, masterpiece, realistic, ultra-fine painting
+棋盘格:
+  prompt: checkerboard
+橡胶 Rubber:
+  negative: smooth and flat, hard and brittle feel, non - rubber colors, blur
+  prompt: rubber material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as elastic and resilient texture,
+    dark or colored rubber hues, surface with a slightly granular or ribbed pattern,
+    flexible and bendable nature, best quality, masterpiece, realistic, ultra-fine
+    painting
+毛绒质感 Plush Texture:
+  negative: Smooth, hair - less texture, lack of soft fibers, cold and non - fuzzy
+    feel, blur
+  prompt: plush texture style {prompt} Consists of soft, short or long fibers that create
+    a warm, fuzzy, and inviting feel. It is often associated with comfort and coziness,
+    such as a stuffed animal or a furry rug, best quality, masterpiece, realistic,
+    ultra-fine painting
+氧化金属:
+  prompt: oxidized metal
+水:
+  prompt: water
+水晶质感 Crystal Texture:
+  negative: Opaque, non - faceted surface, lack of sparkle and the characteristic
+    crystal - like light refraction, blur
+  prompt: crystal texture style {prompt} Transparent, highly faceted surface that sparkles
+    and refracts light spectacularly. Hard and brittle, with a clear and pure look,
+    often in clear or light - colored varieties, best quality, masterpiece, realistic,
+    ultra-fine painting
+水面（带波纹）:
+  prompt: rippled water
+沙漠沙丘:
+  prompt: desert sand dune
+油漆质感 Paint Texture:
+  negative: Lack of paint - like appearance, natural - material texture, no signs
+    of a painted surface, blur
+  prompt: paint texture style {prompt} A smooth or slightly textured surface depending
+    on the type of paint. Can have a wide range of colors, with a finish that can
+    be glossy, matte, or semi - gloss, and may show signs of brushstrokes or spray
+    patterns, best quality, masterpiece, realistic, ultra-fine painting
+液态金属:
+  prompt: liquid metal
+混凝土（粗糙）:
+  prompt: rough concrete
+清玻璃:
+  prompt: clear glass
+火焰（动态）:
+  prompt: dynamic fire
+烟雾:
+  prompt: smoke
+牛仔布:
+  prompt: denim fabric
+玻璃纤维 Fiberglass:
+  negative: opaque, thick texture, messy and disordered texture, blur
+  prompt: fiberglass material style {prompt} paper art, pleated paper, folded, origami
+    art, pleats, cut and fold, centered composition such as interwoven and visible
+    fiber structure, smooth and hard surface with a hint of translucency, lightweight
+    and strong texture, shiny and reflective finish in some cases, best quality, masterpiece,
+    realistic, ultra-fine painting
+玻璃质感 Glass Texture:
+  negative: Opaque, rough texture
+  prompt: glass texture style {prompt} Transparent or translucent, smooth, and hard, it
+    can reflect and refract light, creating interesting optical effects. It has a
+    brittle nature, like a glass window or a glass vase, best quality, masterpiece,
+    realistic, ultra-fine painting
+珊瑚:
+  prompt: coral
+珠光质感 Pearl Luster Texture:
+  negative: Dull, non - iridescent color, rough surface, absence of the characteristic
+    pearl - like luster, blur
+  prompt: pearl luster texture style {prompt} A soft, iridescent sheen similar to that
+    of a pearl, with a smooth surface. The color often has a creamy base with hints
+    of pink, blue, or green in the reflection, giving a luxurious look, best quality,
+    masterpiece, realistic, ultra-fine painting
+琥珀:
+  prompt: amber
+瓷器:
+  prompt: porcelain
+瓷器 Porcelain:
+  negative: rough texture, colorful mottles, modern industrial appearance, blur
+  prompt: porcelain material style {prompt} paper art, pleated paper, folded, origami
+    art, pleats, cut and fold, centered composition such as fine and delicate texture,
+    pure white or pastel - colored hues, intricate hand - painted designs, smooth
+    and glossy surface with a high - quality finish, best quality, masterpiece, realistic,
+    ultra-fine painting
+瓷砖（马赛克）:
+  prompt: mosaic tile
+皮毛质感 Fur Texture:
+  negative: Smooth, hair - less surface, cold - feeling material, lack of the characteristic
+    fur - like texture and warmth, blur
+  prompt: fur texture style {prompt} Soft, hairy surface with long or short hairs, creating
+    a warm and fuzzy feel. The hairs can be straight or curly, and the color can vary
+    from white to brown or black, depending on the type of fur, best quality, masterpiece,
+    realistic, ultra-fine painting
+皮革 Leather:
+  negative: smooth plastic feel, rough stone texture, texture - less flat surface,
+    blur
+  prompt: leather material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as fine - grained texture, supple
+    and durable feel, natural leather color hues, visible stitching and creasing patterns,
+    best quality, masterpiece, realistic, ultra-fine painting
+皮革（复古）:
+  prompt: vintage leather
+石材 Stone:
+  negative: soft texture, mirror - like smooth surface, non - stone colors, blur
+  prompt: stone material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as rugged and irregular surface
+    patterns, varied stone colors and veining, cold and solid texture, natural fissures
+    and pockmarks, best quality, masterpiece, realistic, ultra-fine painting
+砖块:
+  prompt: brick
+硬纸板 Cardboard:
+  negative: smooth and flat, soft and bendable, metallic luster, blur
+  prompt: cardboard material style {prompt} paper art, pleated paper, folded, origami
+    art, pleats, cut and fold, centered composition such as thick and fibrous texture,
+    brown or natural cardboard color, visible corrugated or layered patterns, sturdy
+    and foldable nature, best quality, masterpiece, realistic, ultra-fine painting
+碳纤维:
+  prompt: carbon fiber
+磨砂塑料:
+  prompt: frosted plastic
+磨砂玻璃:
+  prompt: frosted glass
+磨砂铝:
+  prompt: brushed aluminum
+磨砂陶瓷:
+  prompt: matte ceramic
+科幻装甲:
+  prompt: sci-fi armor
+粗糙质感 Rough Texture:
+  negative: Smooth, flat texture, lack of visible irregularities, uniform and polished
+    surface, blur
+  prompt: rough texture style {prompt} The surface has a grainy, uneven feel, with visible
+    bumps, ridges, or imperfections. It can add a sense of authenticity and character,
+    like a brick wall or a piece of unfinished wood, best quality, masterpiece, realistic,
+    ultra-fine painting
+粗麻布:
+  prompt: burlap fabric
+纹理 - Texture:
+  negative: ugly, deformed, noisy, blurry, blur
+  prompt: texture @@@top down close-up, best quality, masterpiece, realistic, ultra-fine
+    painting
+织物 Fabric:
+  negative: smooth and texture - less, hard and stiff, single color, blur
+  prompt: fabric material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as distinct woven or knitted patterns,
+    soft and pliable texture, harmonious color palette, natural drape with gentle
+    folds, best quality, masterpiece, realistic, ultra-fine painting
+织物（丝绸）:
+  prompt: silk fabric
+绒布:
+  prompt: flannel
+绸缎质感 Silk Texture:
+  negative: Rough, heavy - feeling texture, dull color, lack of the smoothness and
+    sheen characteristic of silk, blur
+  prompt: silk texture style {prompt} Smooth, soft, and flowing texture that has a gentle
+    sheen. Feels luxurious to the touch, with a lightweight and delicate appearance,
+    often in rich, solid colors or with subtle patterns, best quality, masterpiece,
+    realistic, ultra-fine painting
+羊毛 Wool:
+  negative: smooth surface, stiff material feel, fiber - less appearance, blur
+  prompt: wool material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as fluffy and fibrous texture,
+    warm and natural color tones, distinct woolen weave patterns, soft and springy
+    touch, best quality, masterpiece, realistic, ultra-fine painting
+聚氯乙烯 PVC:
+  negative: Soft texture, easily breakable material, lack of the typical PVC - like
+    color and finish options, blur
+  prompt: PVC style {prompt} Hard, smooth surface that can be shiny or matte depending
+    on the finish. Available in a wide range of colors, often used in industrial -
+    looking or modern - design products, with a lightweight yet durable feel, best
+    quality, masterpiece, realistic, ultra-fine painting
+聚酯纤维 Polyester:
+  negative: soft and wrinkled, dull colors, appearance of natural fibers, blur
+  prompt: polyester material style {prompt} paper art, pleated paper, folded, origami
+    art, pleats, cut and fold, centered composition such as smooth and synthetic -
+    looking texture, bright and long - lasting color, distinct woven or knitted patterns,
+    stiff yet flexible fabric - like quality, best quality, masterpiece, realistic,
+    ultra-fine painting
+能量护盾:
+  prompt: energy shield
+草地（茂密）:
+  prompt: lush grass
+金属 Metal:
+  negative: dull and lackluster, wood texture, soft and bendable feel, blur
+  prompt: metal material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as shiny and reflective surface,
+    smooth and hard texture, distinct metal grain or brushed finish, metallic color
+    sheen with possible oxidation tints, best quality, masterpiece, realistic, ultra-fine
+    painting
+金属漆质感 Metallic Paint Texture:
+  negative: Dull, non - metallic paint color, rough or uneven paint surface, lack
+    of the characteristic metallic paint luster, blur
+  prompt: metallic paint texture style {prompt} A surface with a paint finish that has
+    a metallic sheen, like a layer of metal - colored paint. Can be smooth or have
+    a slight texture from the paint application, with a durable and eye - catching
+    look, best quality, masterpiece, realistic, ultra-fine painting
+金属质感 Metallic Texture:
+  negative: Dull, non - reflective texture, warm - feeling material, lack of metallic
+    luster and hardness, blur
+  prompt: metallic texture style {prompt} Shiny, reflective, and often cold to the touch,
+    it gives a sense of strength and modernity. Metals can have a smooth or brushed
+    finish, like a stainless - steel appliance or a copper sculpture, best quality,
+    masterpiece, realistic, ultra-fine painting
+针织毛衣:
+  prompt: knitted sweater
+锈蚀钢铁:
+  prompt: rusted steel
+镀金不锈钢:
+  prompt: gold-plated stainless steel
+镜面不锈钢:
+  prompt: mirror stainless steel
+陶瓷 Ceramic:
+  negative: rough and uneven, metal texture, modern and simple appearance, blur
+  prompt: ceramic material style {prompt} paper art, pleated paper, folded, origami art,
+    pleats, cut and fold, centered composition such as smooth and glazed surface,
+    intricate painted or embossed patterns, warm and solid texture, various ceramic
+    color glazes, best quality, masterpiece, realistic, ultra-fine painting
+陶瓷质感 Ceramic Texture:
+  negative: Soft, flexible texture, lack of the characteristic ceramic smoothness
+    and hard - ness, no signs of glazing or patterns, blur
+  prompt: ceramic texture style {prompt} A smooth, hard surface that can be glazed to
+    have a shiny or matte finish. Often has beautiful patterns or colors, and can
+    be in various shapes, with a sense of craftsmanship and durability, best quality,
+    masterpiece, realistic, ultra-fine painting
+
+青瓷质感 Celadon Texture:
+  negative: Bright, non - green colors, rough surface, lack of the characteristic
+    celadon - green color and smoothness, blur
+  prompt: celadon texture style {prompt} A smooth, green - toned ceramic - like surface
+    with a subtle, elegant sheen. The color ranges from light to dark green, often
+    with a slightly translucent quality, giving a classic and refined look, best quality,
+    masterpiece, realistic, ultra-fine painting
+鳄鱼皮:
+  prompt: crocodile leather
+麂皮:
+  prompt: suede leather
+黏土质感 Clay Texture:
+  negative: Smooth, plastic - like texture, uniform color without natural earthy tones,
+    no signs of hand - shaping, blur
+  prompt: clay texture style {prompt} Earthy, slightly rough texture with a malleable
+    look as if it has been shaped by hand. Natural color variations ranging from beige
+    to brown, and visible marks from the molding process, best quality, masterpiece,
+    realistic, ultra-fine painting
+
+
+
+
+
+
+
+
+
+
