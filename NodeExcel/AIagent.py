@@ -363,13 +363,19 @@ import folder_paths
 
 # 确保JSON文件存在，不存在则创建默认文件
 def init_json_file():
-    if not os.path.exists(json_path):
-        default_data = {
-            "TEXT_PROMPTS": {"None": ""},
-            "IMAGE_PROMPTS": {"None": ""}
-        }
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(default_data, f, ensure_ascii=False, indent=4)
+    try:
+        json_dir = os.path.dirname(json_path)
+        if json_dir:
+            os.makedirs(json_dir, exist_ok=True)
+        if not os.path.exists(json_path):
+            default_data = {
+                "TEXT_PROMPTS": {"None": ""},
+                "IMAGE_PROMPTS": {"None": ""}
+            }
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(default_data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"init_json_file failed: {e}")
 
 init_json_file()
 
