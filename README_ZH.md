@@ -26,6 +26,12 @@
 <img width="2094" height="937" alt="image" src="https://github.com/user-attachments/assets/a36d6361-8db8-446a-b5f1-17780ca289bc" />
 
 2026.3.29 增加视频自动分割节点"AD_VideoSeg": AD_VideoSeg,
+
+2026.4.27 更新交互提示词工具 “text_interPrompt“” 支持4种模式
+
+<img width="2281" height="634" alt="image" src="https://github.com/user-attachments/assets/0acf9217-701e-4c30-92e2-9f5f8ea2eefe" />
+
+
             
 # <font color="#000000">二、Usage Guide使用指南</font> 
 
