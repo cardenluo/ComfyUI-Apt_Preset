@@ -28,6 +28,9 @@ The current workflow connections are becoming increasingly dense, making them di
 <img width="2028" height="868" alt="image" src="https://github.com/user-attachments/assets/bd2f2bb4-b82d-4297-bff8-cb40f46bbff2" />
 2026.3.29 Add  Automatic Video Segmentation Node ："AD_VideoSeg": AD_VideoSeg,
 
+2026.4.27 Updated the prompt visualization tool “text_interPrompt“” to support 4 modes
+
+<img width="2281" height="634" alt="image" src="https://github.com/user-attachments/assets/0acf9217-701e-4c30-92e2-9f5f8ea2eefe" />
 
 # II. Usage Guide
 
