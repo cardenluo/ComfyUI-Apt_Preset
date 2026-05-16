@@ -1,0 +1,33 @@
+{
+    "nodeCategories": {
+        "chx_load": "加载器",
+        "chx_ksample": "采样器",
+        "chx_tool": "控制器",
+        "chx_IPA": "IPA风格",
+        "stack": "堆",
+        "AD": "视频",
+        "PreView": "预览",
+        "data": "数据",
+        "image": "图像",
+        "imgEffect": "构图",
+        "mask": "遮罩",
+        "prompt": "提示词",
+        "Apt_Preset": "Apt_Preset",
+        "flow": "流程",
+        "schedule": "调度值",
+        "😺backup": "😺备用",
+        "text_tool": "文本工具",
+        "ImgCoordinate": "图像坐标",
+        "🚫Deprecated": "🚫弃用",
+        "color_adjust": "色彩调整",
+        "excel": "excel表格",
+        "IO_Port": "输入输出",
+        "ImgResize": "尺寸调整",
+        "ImgLayer": "图层处理",
+        "ImgBatch": "图像批次",
+        "list|Batch": "列表批次",
+        "texture": "纹理"
+
+    }
+} 
+
