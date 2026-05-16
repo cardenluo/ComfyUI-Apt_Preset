@@ -1,3 +1,0 @@
-将整个文件复制覆盖到：
-
-ComfyUI-DD-Translation\zh-CN 文件夹
