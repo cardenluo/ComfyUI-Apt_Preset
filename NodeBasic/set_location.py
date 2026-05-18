@@ -859,7 +859,7 @@ class Bbox_strToBbox:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "index": ("INT", {"default":0, "min":0}),
+                "index": ("INT", {"default": 0, "min": -1}),
             },
             "optional": {
                 "normalized_str": ("STRING", {"default": "", "forceInput": True}),
@@ -867,10 +867,9 @@ class Bbox_strToBbox:
             }
         }
     
-    # 🔥 新增输出：normalized_output
-    RETURN_TYPES = ("BOUNDING_BOX", "STRING", "MASK")
-    RETURN_NAMES = ("bbox", "normalized_str", "mask")
-    
+    RETURN_TYPES = ("BOUNDING_BOX", "STRING", "MASK", "BOUNDING_BOX", "STRING", "MASK")
+    RETURN_NAMES = ("bbox", "normalized_str", "mask", "bbox_list", "normalized_list", "mask_list")
+    OUTPUT_IS_LIST = (False, False, False, True, True, True)
     FUNCTION = "exec"
     CATEGORY = "Apt_Preset/image/ImgCoordinate"
 
@@ -878,7 +877,8 @@ class Bbox_strToBbox:
      将边界框字符串转为实际边界框与掩码。
     - normalized_str对角框：含归一化对坐标生成的边界框字符串【手绘生成】
     - permil_str千分比对角框：含千分比对坐标生成的边界框字符串【AI生成】
-    - index：默认0，是所有边界框，1是第一个边界框
+    - index：1是第一个边界框，2是第二个边界框
+    - index：-1是最后一个边界框，0是全部边界框
 """ 
     @staticmethod
     def _ensure_bhwc(image: torch.Tensor) -> torch.Tensor:
@@ -901,6 +901,67 @@ class Bbox_strToBbox:
         boxes = []
         use_normalized = False
 
+        def build_box_outputs(box_group, merge_masks):
+            pixel_boxes = []
+            merged_mask = torch.zeros((batch, img_h, img_w), dtype=image.dtype, device=image.device)
+            single_masks = []
+            normalized_items = []
+
+            for x1, y1, x2, y2 in box_group:
+                if use_normalized:
+                    px1 = x1 * img_w
+                    py1 = y1 * img_h
+                    px2 = x2 * img_w
+                    py2 = y2 * img_h
+                    nx1 = round(x1, 4)
+                    ny1 = round(y1, 4)
+                    nx2 = round(x2, 4)
+                    ny2 = round(y2, 4)
+                else:
+                    px1 = x1 * img_w / 1000
+                    py1 = y1 * img_h / 1000
+                    px2 = x2 * img_w / 1000
+                    py2 = y2 * img_h / 1000
+                    nx1 = round(x1 / 1000, 4)
+                    ny1 = round(y1 / 1000, 4)
+                    nx2 = round(x2 / 1000, 4)
+                    ny2 = round(y2 / 1000, 4)
+
+                px1 = max(0, min(int(round(px1)), img_w))
+                py1 = max(0, min(int(round(py1)), img_h))
+                px2 = max(0, min(int(round(px2)), img_w))
+                py2 = max(0, min(int(round(py2)), img_h))
+
+                if px2 < px1:
+                    px1, px2 = px2, px1
+                if py2 < py1:
+                    py1, py2 = py2, py1
+
+                bw = max(1, px2 - px1)
+                bh = max(1, py2 - py1)
+                pixel_boxes.append([px1, py1, bw, bh])
+
+                nx1 = max(0.0, min(1.0, nx1))
+                ny1 = max(0.0, min(1.0, ny1))
+                nx2 = max(0.0, min(1.0, nx2))
+                ny2 = max(0.0, min(1.0, ny2))
+                normalized_items.append([nx1, ny1, nx2, ny2])
+
+                if merge_masks:
+                    merged_mask[:, py1:py2, px1:px2] = 1.0
+
+                mask_item = torch.zeros((1, img_h, img_w), dtype=image.dtype, device=image.device)
+                mask_item[:, py1:py2, px1:px2] = 1.0
+                single_masks.append(mask_item)
+
+            bbox_items = [
+                {"x": int(px1), "y": int(py1), "width": int(bw), "height": int(bh)}
+                for px1, py1, bw, bh in pixel_boxes
+            ]
+            normalized_json = json.dumps(normalized_items)
+            normalized_list = [json.dumps([item]) for item in normalized_items]
+            return bbox_items, normalized_json, merged_mask, normalized_list, single_masks
+
         # 优先使用归一化
         norm_boxes = robust_extract_bbox(normalized_str)
         if norm_boxes:
@@ -918,87 +979,44 @@ class Bbox_strToBbox:
                 y2 = min(img_h, 100)
                 x2 = min(img_w, 100)
                 fallback_mask[:, 0:y2, 0:x2] = 1.0
-                return (fallback_bbox, "[[0.0, 0.0, 0.1, 0.1]]", fallback_mask)
+                fallback_normalized = [[0.0, 0.0, 0.1, 0.1]]
+                fallback_normalized_str = json.dumps(fallback_normalized)
+                fallback_mask_item = fallback_mask[:1].clone()
+                return (
+                    fallback_bbox,
+                    fallback_normalized_str,
+                    fallback_mask,
+                    [fallback_bbox],
+                    [fallback_normalized_str],
+                    [fallback_mask_item],
+                )
 
-        # index 选择
+        # 单个/全部选择规则：1=第一个，2=第二个，-1=最后一个，0=全部
         if index == 0:
-            sel = boxes
+            selected_boxes = boxes
+        elif index == -1:
+            selected_boxes = [boxes[-1]]
         else:
             idx = index - 1
             if 0 <= idx < len(boxes):
-                sel = [boxes[idx]]
+                selected_boxes = [boxes[idx]]
             else:
-                sel = [boxes[0]]
+                selected_boxes = [boxes[0]]
 
-        # --------------------------
-        # 1. 计算像素框
-        # --------------------------
-        out = []
-        full_mask = torch.zeros((batch, img_h, img_w), dtype=image.dtype, device=image.device)
-        for x1,y1,x2,y2 in sel:
-            if use_normalized:
-                px1 = x1 * img_w
-                py1 = y1 * img_h
-                px2 = x2 * img_w
-                py2 = y2 * img_h
-            else:
-                px1 = x1 * img_w / 1000
-                py1 = y1 * img_h / 1000
-                px2 = x2 * img_w / 1000
-                py2 = y2 * img_h / 1000
+        bbox_items_selected, normalized_str_out, full_mask, _, _ = build_box_outputs(selected_boxes, merge_masks=True)
+        bbox_out = bbox_items_selected[0] if len(bbox_items_selected) == 1 else bbox_items_selected
 
-            px1 = max(0, min(int(round(px1)), img_w))
-            py1 = max(0, min(int(round(py1)), img_h))
-            px2 = max(0, min(int(round(px2)), img_w))
-            py2 = max(0, min(int(round(py2)), img_h))
+        bbox_items_all, _, _, normalized_list_out, mask_list_out = build_box_outputs(boxes, merge_masks=False)
 
-            if px2 < px1:
-                px1, px2 = px2, px1
-            if py2 < py1:
-                py1, py2 = py2, py1
+        return (
+            bbox_out,
+            normalized_str_out,
+            full_mask,
+            bbox_items_all,
+            normalized_list_out,
+            mask_list_out,
+        )
 
-            bw = max(1, px2 - px1)
-            bh = max(1, py2 - py1)
-            out.append([px1, py1, bw, bh])
-            full_mask[:, py1:py2, px1:px2] = 1.0
-
-        # --------------------------
-        # 2. 🔥 生成归一化坐标输出（你要的核心）
-        # --------------------------
-        normalized_result = []
-        for x1, y1, x2, y2 in sel:
-            if use_normalized:
-                # 输入本身就是归一化 → 直接保留
-                nx1 = round(x1, 4)
-                ny1 = round(y1, 4)
-                nx2 = round(x2, 4)
-                ny2 = round(y2, 4)
-            else:
-                # 输入是千分比 → 转换成归一化
-                nx1 = round(x1 / 1000, 4)
-                ny1 = round(y1 / 1000, 4)
-                nx2 = round(x2 / 1000, 4)
-                ny2 = round(y2 / 1000, 4)
-
-            # 限制 0~1 范围
-            nx1 = max(0.0, min(1.0, nx1))
-            ny1 = max(0.0, min(1.0, ny1))
-            nx2 = max(0.0, min(1.0, nx2))
-            ny2 = max(0.0, min(1.0, ny2))
-
-            normalized_result.append([nx1, ny1, nx2, ny2])
-
-        # 转成字符串输出
-        normalized_str_out = json.dumps(normalized_result)
-
-        # --------------------------
-        # 与系统 BoundingBox 结构对齐：{x, y, width, height}
-        bbox_items = [
-            {"x": int(px1), "y": int(py1), "width": int(bw), "height": int(bh)}
-            for px1, py1, bw, bh in out
-        ]
-        bbox_out = bbox_items[0] if len(bbox_items) == 1 else bbox_items
-        return (bbox_out, normalized_str_out, full_mask)
 
 
 class Bbox_BboxToStr:
