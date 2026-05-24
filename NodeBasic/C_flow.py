@@ -460,6 +460,7 @@ async def apt_preset_flow_bridge_image_save_edit(request):
 
     fields = {}
     image_bytes = None
+    image_ref = None
 
     while True:
         part = await reader.next()
@@ -467,14 +468,56 @@ async def apt_preset_flow_bridge_image_save_edit(request):
             break
         if part.name == "image":
             image_bytes = await part.read(decode=False)
+        elif part.name == "image_ref":
+            image_ref = await part.text()
         else:
             fields[part.name] = await part.text()
 
     node_id = str(fields.get("node_id", "")).strip()
     if not node_id:
         return web.json_response({"ok": False, "error": "缺少 node_id。"}, status=400)
-    if not image_bytes:
+    if not image_bytes and not image_ref:
         return web.json_response({"ok": False, "error": "缺少编辑后的图片数据。"}, status=400)
+
+    if image_ref and not image_bytes:
+        try:
+            ref_info = json.loads(image_ref)
+            filename = str(ref_info.get("filename", "")).strip()
+            subfolder = str(ref_info.get("subfolder", "")).strip().replace("\\", "/")
+            if not filename:
+                return web.json_response({"ok": False, "error": "image_ref 缺少 filename。"}, status=400)
+            input_dir = os.path.abspath(folder_paths.get_input_directory())
+            source_path = os.path.abspath(os.path.join(input_dir, subfolder, filename))
+            if not source_path.startswith(input_dir):
+                return web.json_response({"ok": False, "error": "image_ref 路径非法。"}, status=400)
+            if not os.path.exists(source_path):
+                return web.json_response({"ok": False, "error": "image_ref 指向的文件不存在。"}, status=400)
+            with open(source_path, "rb") as f:
+                image_bytes = f.read()
+        except Exception as e:
+            return web.json_response({"ok": False, "error": f"读取 image_ref 失败: {e}"}, status=400)
+
+    # #region debug-point D:save-edit-received
+    import urllib.request
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            "http://127.0.0.1:7777/event",
+            data=json.dumps({
+                "sessionId": "mask-save-lag",
+                "runId": "post-fix",
+                "hypothesisId": "D",
+                "location": "C_flow.py:apt_preset_flow_bridge_image_save_edit:received",
+                "msg": "[DEBUG] 后端收到编辑后的图片上传",
+                "data": {
+                    "node_id": node_id,
+                    "image_bytes": len(image_bytes),
+                }
+            }).encode(),
+            headers={"Content-Type": "application/json"}
+        )).read()
+    except Exception:
+        pass
+    # #endregion
 
     cache_dir = flow_bridge_image._get_node_cache_dir(node_id)
     os.makedirs(cache_dir, exist_ok=True)
@@ -488,6 +531,32 @@ async def apt_preset_flow_bridge_image_save_edit(request):
                 mask_array = alpha
             else:
                 mask_array = rgba_np[:, :, :3].max(axis=2).astype(np.uint8)
+            mask_array = (255 - mask_array).astype(np.uint8)
+            # #region debug-point D:save-edit-parsed
+            try:
+                urllib.request.urlopen(urllib.request.Request(
+                    "http://127.0.0.1:7777/event",
+                    data=json.dumps({
+                        "sessionId": "mask-save-lag",
+                        "runId": "post-fix",
+                        "hypothesisId": "D",
+                        "location": "C_flow.py:apt_preset_flow_bridge_image_save_edit:parsed",
+                        "msg": "[DEBUG] 后端解析上传图片完成",
+                        "data": {
+                            "node_id": node_id,
+                            "mode": pil_image.mode,
+                            "size": list(pil_image.size),
+                            "alpha_min": int(alpha.min()),
+                            "alpha_max": int(alpha.max()),
+                            "mask_min": int(mask_array.min()),
+                            "mask_max": int(mask_array.max()),
+                        }
+                    }).encode(),
+                    headers={"Content-Type": "application/json"}
+                )).read()
+            except Exception:
+                pass
+            # #endregion
             gray_image = Image.fromarray(mask_array, mode="L")
             for filename in os.listdir(cache_dir):
                 if filename.startswith("bridge_mask_edit_") and filename.endswith(".png"):
