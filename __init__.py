@@ -32,6 +32,7 @@ from .NodeBasic.C_AD import *
 from .NodeBasic.C_image import *
 from .NodeBasic.C_promp import *
 from .NodeBasic.C_imgEffect import *
+from .NodeBasic.C_imgEffect import Image_effect_Load
 from .NodeBasic.C_type import *
 from .NodeExcel.ExcelOP import *
 from .NodeExcel.AIagent import *
