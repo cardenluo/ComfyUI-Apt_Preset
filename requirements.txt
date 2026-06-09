@@ -1,0 +1,16 @@
+pandas 
+pydub  
+watchdog>=3.0.0  
+gguf>=0.13.0  
+protobuf       
+onnxruntime   
+transparent-background 
+opencv-python-headless  
+toml
+tqdm     
+matplotlib
+scipy
+openpyxl    
+soundfile>=0.10.0
+scenedetect 
+
