@@ -2793,7 +2793,7 @@ class IO_store_image:
     DESCRIPTION = """
     输出逻辑：
     - 全部尺寸一致时：
-      - release_total ≤ 0 → 输出全部存储的图像
+      - release_total ≤ 0 → 输出最后一张图像
       - release_total > 0 → 
         1. 存储总数 = release_total → 输出全部
         2. 存储总数 < release_total → 关闭输出
@@ -2870,10 +2870,10 @@ class IO_store_image:
             # 尺寸一致 → 执行新的核心分支逻辑
             else:
                 release_total = int(release_total)
-                # 分支1: release_total ≤ 0 → 输出全部存储的图像，开关为真
+                # 分支1: release_total ≤ 0 → 默认仅输出最后一张图像
                 if release_total <= 0:
                     switch_boolean = True
-                    output_image = torch.cat(GLOBAL_STORED_IMAGES, dim=0)
+                    output_image = GLOBAL_STORED_IMAGES[-1]
                     current_total = total_stored
                 # 分支2: release_total > 0 → 三层IF布尔判断
                 else:
@@ -4692,5 +4692,4 @@ class basicIn_clip:
             negative = None       
 
         return (positive, negative)
-
 
