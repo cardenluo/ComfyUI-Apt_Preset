@@ -586,7 +586,7 @@ NODE_CLASS_MAPPINGS= {
 "AI_ModelScopeT2I": AI_ModelScopeT2I,
 "AI_ModelScope_text": AI_ModelScope_text,
 
-"ChineseToEnglish":ChineseToEnglish,
+#"ChineseToEnglish":ChineseToEnglish,
 
 
 
