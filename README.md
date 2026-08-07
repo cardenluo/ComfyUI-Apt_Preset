@@ -11,26 +11,10 @@ The current workflow connections are becoming increasingly dense, making them di
 
 # I. Update Record
 
-2025.1.14  Optimize sum_load to support caching and cleaning, update AI_GLM to support the new GLM 4.7 model, and add judgment nodes to the process group
+2026.8.07 minimax h3 Simple Pipeline Workflow
 
-2025.01.17  sum_load and sum_edit are compatible with the latent size of Flux2_Klein
+<img width="3425" height="1304" alt="image" src="https://github.com/user-attachments/assets/9f57ba5e-e4ca-4390-9d86-7671fd182af4" />
 
-2025.1.25  Add an image batch loading manager：IO_LoadImgList
-
-2025.1.31  update IO_LoadImgList Supports bridging, with more powerful operations
-
-2026.3.13 add LTX2.3 video_merge: AD_video_merge
-
-2026.3.15 Add visualization batch loading nodes ：IO_LoadImgBatch、IO_LoadTextBatch、IO_LoadShotBatch
-
-2026.3.22 Add image editing and visualization nodes
-
-<img width="2028" height="868" alt="image" src="https://github.com/user-attachments/assets/bd2f2bb4-b82d-4297-bff8-cb40f46bbff2" />
-2026.3.29 Add  Automatic Video Segmentation Node ："AD_VideoSeg": AD_VideoSeg,
-
-2026.4.27 Updated the prompt visualization tool “text_interPrompt“” to support 4 modes
-
-<img width="2281" height="634" alt="image" src="https://github.com/user-attachments/assets/0acf9217-701e-4c30-92e2-9f5f8ea2eefe" />
 
 # II. Usage Guide
 
