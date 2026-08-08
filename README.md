@@ -12,9 +12,11 @@ The current workflow connections are becoming increasingly dense, making them di
 # I. Update Record
 
 
-2026.8.08   add new node : AD_MiniMax_guide 
+2026.8.08   add new node : AD_MiniMax_guide  , A simple and efficient way of working
 
 <img width="2639" height="1309" alt="image" src="https://github.com/user-attachments/assets/a6a2130e-e877-4d2a-a254-5344c5fd16c3" />
+
+<img width="3249" height="1473" alt="image" src="https://github.com/user-attachments/assets/426ece34-5b17-4c32-8f8c-44443371f3c9" />
 
 
 
