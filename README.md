@@ -11,9 +11,11 @@ The current workflow connections are becoming increasingly dense, making them di
 
 # I. Update Record
 
-2026.8.07 minimax h3 Simple Pipeline Workflow
 
-<img width="3425" height="1304" alt="image" src="https://github.com/user-attachments/assets/9f57ba5e-e4ca-4390-9d86-7671fd182af4" />
+2026.8.08   add new node : AD_MiniMax_guide 
+
+<img width="2639" height="1309" alt="image" src="https://github.com/user-attachments/assets/a6a2130e-e877-4d2a-a254-5344c5fd16c3" />
+
 
 
 # II. Usage Guide
