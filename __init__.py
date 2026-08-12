@@ -623,7 +623,7 @@ NODE_CLASS_MAPPINGS= {
 
 "InputShareNode": InputShareNode,
 "flow_createbatch": flow_createbatch,  #    CATEGORY = "Apt_Preset/stack/register"
-
+"Easy_QwenEdit2509": Easy_QwenEdit2509,
 
 #----------------------外部导入节点-----------------------
 
