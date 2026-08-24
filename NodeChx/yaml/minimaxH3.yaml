@@ -1,0 +1,146 @@
+换人-通用词:
+  negative: ''
+  prompt: "subject_definitions:\n<Subject 1> is the woman whose appearance comes from\
+    \ .\n is the source video for the editing task, providing the camera movement,\
+    \ scene, timing, and synchronized audio track.\n\nsummary:\n[video editing + audio\
+    \ reuse] The target video is an edited version of . The original female character\
+    \ is replaced by <Subject 1>, whose appearance comes from . <Subject 1> performs\
+    \ the same actions, timing, and camera interaction as the original character.\
+    \ The synchronized audio track of  is reused 1:1 as the target video's complete\
+    \ audio track.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): attribute_transfer\
+    \ - the original character's identity and appearance are replaced by the appearance\
+    \ from , while the actions, timing, and spatial position follow .\n (camera, scene,\
+    \ and timing): fully_preserved - the original camera movement, framing, environment,\
+    \ lighting, and temporal structure are maintained without modification.\n (synchronized\
+    \ audio): fully_copy - the complete original audio track from  is reused as the\
+    \ target video's complete final audio.\n\ndetailed_description:\nThe target video\
+    \ is in realistic cinematic style.\n[Shot 1] The shot begins from the source ,\
+    \ following the exact same camera movement, framing, and timing. <Subject 1>,\
+    \ the woman whose appearance comes from , stands in the same position and performs\
+    \ the same actions as the original character in . She matches the original character's\
+    \ gestures, head turns, body posture, and pace precisely. The environment, lighting,\
+    \ and background remain identical to . The complete synchronized audio track from\
+    \ , including all dialogue, ambient sounds, and background music, plays unchanged\
+    \ throughout the entire 5-second duration.\n\noverall_soundscape:\nThe complete\
+    \ ambient and physical sound track from  is reused without any modification.\n\
+    \nnon_diegetic_music:\nAny non-diegetic background music present in  is reused\
+    \ as-is from the original track."
+换人脸通用词:
+  negative: ''
+  prompt: "#segment1---------\nsubject_definitions:\n<Subject 1> is the person appearing\
+    \ in , whose body type, clothing, actions, gestures, and spatial position are\
+    \ preserved in the target video, but whose face is replaced by the face from .\n\
+    \ provides the target face for <Subject 1>, including the facial structure, skin\
+    \ tone, eye shape, nose, mouth, jawline, and hair from the person shown in the\
+    \ image.\n is the source video for the editing task, providing the camera movement,\
+    \ character body motion, scene, timing, and synchronized audio track.\n\nsummary:\n\
+    [video editing + audio reuse] The target video is an edited version of . <Subject\
+    \ 1> retains the same body type, clothing, actions, gestures, timing, and screen\
+    \ position as the original character. Only the face is replaced: the original\
+    \ face is substituted with the face from , with its specific facial structure,\
+    \ skin tone, eye shape, nose, mouth, jawline, and hair. The facial expressions,\
+    \ lip movements, and head movements match the original performance in . The camera\
+    \ movement, scene, and synchronized audio track of  are all reused without modification.\n\
+    \nretention_analysis:\n<Subject 1> (appears in [Shot 1]): partially_preserved\
+    \ - the character's body type, clothing, actions, gestures, timing, and spatial\
+    \ position are fully retained, while the original face is replaced by the face\
+    \ from .\n (facial appearance): attribute_transfer - the facial structure, skin\
+    \ tone, eye shape, nose, mouth, jawline, and hair from  are transferred onto <Subject\
+    \ 1>, replacing the original face while matching the original facial expressions\
+    \ and lip movements from .\n (camera, scene, and timing): fully_preserved - the\
+    \ original camera movement, framing, environment, lighting, and temporal structure\
+    \ are maintained without modification.\n (synchronized audio): fully_copy - the\
+    \ complete original audio track from  is reused as the target video's complete\
+    \ final audio.\n\ndetailed_description:\nThe target video is in realistic cinematic\
+    \ style.\n[Shot 1] The shot follows the exact same camera movement, framing, and\
+    \ timing as . <Subject 1> stands in the same position, wearing the same clothing,\
+    \ with the same body type, and performs the identical actions, gestures, and body\
+    \ movements with the same timing as the original character in . The only change\
+    \ is the face: <Subject 1> now has the face from , with its specific facial structure,\
+    \ skin tone, eye shape, nose shape, mouth shape, jawline contour, and hairstyle,\
+    \ naturally blended onto the character's head with consistent skin tone transition\
+    \ at the neck and seamless edge blending. The new face's expressions — eye blinks,\
+    \ eyebrow movements, mouth movements, smiles, and subtle micro-expressions — match\
+    \ the timing and emotion of the original performance in , as if the person from\
+    \  was the original performer. The environment, lighting, and background remain\
+    \ identical to . The complete synchronized audio track from , including all dialogue,\
+    \ ambient sounds, and background music, plays unchanged throughout the entire\
+    \ 5-second duration.\n\noverall_soundscape:\nThe complete ambient and physical\
+    \ sound track from  is reused without any modification.\n\nnon_diegetic_music:\n\
+    Any non-diegetic background music present in  is reused as-is from the original\
+    \ track."
+换背景-通用词:
+  negative: ''
+  prompt: "\nsubject_definitions:\n<Subject 1> is the girl appearing in , whose identity,\
+    \ face, clothing, body type, actions, and singing performance are fully preserved\
+    \ in the target video.\n<Subject 2> is the new background environment whose appearance\
+    \ comes from , a bedroom with its specific layout, furniture, colors, lighting,\
+    \ and decor as shown in .\n is the reference video providing the camera movement,\
+    \ character motion, timing, and synchronized audio track for the target video.\n\
+    \nsummary:\n[reference generation + audio reuse] The target video places <Subject\
+    \ 1> from  into the new background environment <Subject 2> from . <Subject 1>\
+    \ retains the same identity, face, clothing, singing performance, actions, and\
+    \ timing as in . The camera movement and character motion follow . The background\
+    \ is entirely replaced by <Subject 2> from . The synchronized audio track of \
+    \ is reused 1:1 as the target video's complete audio.\n\nretention_analysis:\n\
+    <Subject 1> (appears in [Shot 1]): fully_preserved - the girl's identity, face,\
+    \ clothing, body type, expressions, singing actions, gestures, and timing are\
+    \ fully retained from .\n<Subject 2> (appears in [Shot 1]): fully_preserved -\
+    \ the bedroom background from  is used as the complete environment, with its specific\
+    \ layout, furniture, colors, lighting, and decor reproduced exactly.\n (camera\
+    \ movement and timing): fully_preserved - the original camera movement, framing\
+    \ relative to the character, and temporal structure are maintained.\n (original\
+    \ background): not_preserved - the original indoor background is entirely replaced\
+    \ by <Subject 2> from .\n (synchronized audio): fully_copy - the complete original\
+    \ audio track from , including the singing and any background music, is reused\
+    \ as the target video's complete final audio.\n\ndetailed_description:\nThe target\
+    \ video is in realistic cinematic style.\n[Shot 1] The shot follows the same camera\
+    \ movement and framing relative to the character as . <Subject 1>, the same girl\
+    \ from  with the same face, identity, clothing, and body type, performs the identical\
+    \ singing performance, lip movements, gestures, and body movements with the same\
+    \ timing. She is placed in <Subject 2>, the bedroom from , which serves as the\
+    \ complete background environment with its specific bed, furniture, wall colors,\
+    \ lighting fixtures, window, and decor all reproduced exactly as shown in . The\
+    \ girl's position, scale, and movement within the frame remain the same as in\
+    \ , composited naturally into the new bedroom environment with realistic lighting\
+    \ interaction and consistent shadows. The complete synchronized audio track from\
+    \ , including the singing and any ambient sounds, plays unchanged throughout the\
+    \ entire 5-second duration.\n\noverall_soundscape:\nThe complete audio track from\
+    \ , including the singing and ambient sounds, is reused without any modification.\n\
+    \nnon_diegetic_music:\nAny background music present in  is reused as-is from the\
+    \ original track."
+换衣服-通用词:
+  negative: ''
+  prompt: "#segment1---------\nsubject_definitions:\n<Subject 1> is the person appearing\
+    \ in , whose identity, face, body type, and actions are preserved in the target\
+    \ video.\n is the clothing reference, providing the garment style, color, pattern,\
+    \ and texture to be transferred onto <Subject 1>.\n is the source video for the\
+    \ editing task, providing the camera movement, scene, timing, and synchronized\
+    \ audio track.\n\nsummary:\n[video editing + attribute transfer + audio reuse]\
+    \ The target video is an edited version of . <Subject 1> retains the same identity,\
+    \ face, body, actions, and position as the original character in . Only the clothing\
+    \ is replaced: the original garment is substituted with the garment from . The\
+    \ camera movement, scene, lighting, timing, and synchronized audio track of  are\
+    \ all reused without modification.\n\nretention_analysis:\n<Subject 1> (appears\
+    \ in [Shot 1]): partially_preserved - the person's identity, face, body type,\
+    \ facial expressions, actions, and spatial position are fully retained, while\
+    \ the original clothing is replaced by the garment from .\n (clothing): attribute_transfer\
+    \ - the garment's style, color, pattern, and texture from  are transferred onto\
+    \ <Subject 1>, fitted to the character's body and motion.\n (camera, scene, and\
+    \ timing): fully_preserved - the original camera movement, framing, environment,\
+    \ lighting, and temporal structure are maintained without modification.\n (synchronized\
+    \ audio): fully_copy - the complete original audio track from  is reused as the\
+    \ target video's complete final audio.\n\ndetailed_description:\nThe target video\
+    \ is in realistic cinematic style.\n[Shot 1] The shot begins from the source ,\
+    \ following the exact same camera movement, framing, and timing. <Subject 1>,\
+    \ the same person from  with the same face, identity, and body type, stands in\
+    \ the same position and performs the identical actions, gestures, and movements\
+    \ as the original. The only change is the clothing: <Subject 1> now wears the\
+    \ garment from , with its specific style, color, pattern, and texture, naturally\
+    \ fitted to the character's body and draping realistically with the body's motion.\
+    \ The environment, lighting, and background remain identical to . The complete\
+    \ synchronized audio track from , including all dialogue, ambient sounds, and\
+    \ background music, plays unchanged throughout the entire 5-second duration.\n\
+    \noverall_soundscape:\nThe complete ambient and physical sound track from  is\
+    \ reused without any modification.\n\nnon_diegetic_music:\nAny non-diegetic background\
+    \ music present in  is reused as-is from the original track."
