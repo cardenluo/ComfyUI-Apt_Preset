@@ -1389,6 +1389,7 @@ _STAGE_BRIDGE_TYPES = ["auto", "latent", "image", "mask", "video", "audio", "ten
 _STAGE_INFO_TYPE = "FLOW_STAGE_INFO"
 _STAGE_ACTIVE_RUN_IDS = {}
 _STAGE_BEGIN_NODE_IDS = {}
+_STAGE_AUTO_RUN_IDS = {}
 
 
 def _stage_safe_name(value):
@@ -1403,11 +1404,16 @@ def _stage_root_dir():
     return root
 
 
-def _stage_run_dir(run_id):
+def _stage_run_path(run_id):
     root = _stage_root_dir()
     path = os.path.abspath(os.path.join(root, _stage_safe_name(run_id)))
     if os.path.commonpath((root, path)) != root:
         raise ValueError("flow_stage: invalid run_id")
+    return path
+
+
+def _stage_run_dir(run_id):
+    path = _stage_run_path(run_id)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -1421,6 +1427,10 @@ def _stage_new_run_id():
         suffix += 1
         candidate = f"{base}_{suffix:03d}"
     return candidate
+
+
+def _stage_is_generated_run_id(run_id):
+    return re.fullmatch(r"\d{12}(?:_\d{3})?", str(run_id or "")) is not None
 
 
 def _stage_feedback(unique_id, widget_name, value):
@@ -1672,7 +1682,7 @@ class flow_stage_begin:
 
         files = []
         if effective_run_id and not single_stage:
-            run_dir = _stage_run_dir(effective_run_id)
+            run_dir = _stage_run_path(effective_run_id)
             state_path = _stage_state_path(run_dir)
             if os.path.isfile(state_path):
                 state_stat = os.stat(state_path)
@@ -1718,6 +1728,11 @@ class flow_stage_begin:
         if effective_run_id:
             run_dir = _stage_run_dir(effective_run_id)
             state = _stage_load_state(run_dir)
+        auto_run_id = bool(
+            (node_key and _STAGE_AUTO_RUN_IDS.get(node_key) == effective_run_id)
+            or (state is not None and state.get("auto_run_id", False))
+            or (state is not None and _stage_is_generated_run_id(effective_run_id))
+        )
 
         stage_index = requested_index - 1
         expanding_total = False
@@ -1729,10 +1744,11 @@ class flow_stage_begin:
                     for channel in ("data1", "data2")
                 )
             )
-            if not has_checkpoint and not single_stage:
+            if not has_checkpoint and not single_stage and (not effective_run_id or effective_run_id == "default" or auto_run_id):
                 effective_run_id = _stage_new_run_id()
                 run_dir = _stage_run_dir(effective_run_id)
                 state = None
+                auto_run_id = True
             data_1 = initial_data_1
             data_2 = initial_data_2
         else:
@@ -1782,6 +1798,7 @@ class flow_stage_begin:
                 state = {
                     "version": _STAGE_BRIDGE_VERSION,
                     "run_id": effective_run_id,
+                    "auto_run_id": auto_run_id,
                     "total": total,
                     "completed_stage": stage_index - 1,
                     "next_stage": stage_index,
@@ -1802,12 +1819,17 @@ class flow_stage_begin:
         if node_key:
             _STAGE_ACTIVE_RUN_IDS[node_key] = effective_run_id
             _STAGE_BEGIN_NODE_IDS[effective_run_id] = node_key
+            if auto_run_id:
+                _STAGE_AUTO_RUN_IDS[node_key] = effective_run_id
+            else:
+                _STAGE_AUTO_RUN_IDS.pop(node_key, None)
         _stage_feedback(unique_id, "run_id", effective_run_id)
         _stage_feedback(unique_id, "stage_index", stage_index + 1)
 
         stage_info = {
             "version": _STAGE_BRIDGE_VERSION,
             "run_id": effective_run_id,
+            "auto_run_id": auto_run_id,
             "stage_index": stage_index,
             "total": total,
             "is_first": stage_index == 0,
@@ -1995,6 +2017,7 @@ class flow_stage_end:
         next_state = {
             "version": _STAGE_BRIDGE_VERSION,
             "run_id": str(run_id),
+            "auto_run_id": bool(stage_info.get("auto_run_id", False)),
             "total": total,
             "completed_stage": stage_index,
             "next_stage": stage_index + 1,
@@ -2278,7 +2301,7 @@ class AD_Video_color_grad:
     RETURN_TYPES = ("VIDEO",)
     RETURN_NAMES = ("video",)
     FUNCTION = "grade"
-    CATEGORY = "Apt_Preset/flow"
+    CATEGORY = "Apt_Preset/AD"
     OUTPUT_NODE = True
     DESCRIPTION = "视频调色：在轨道上拖选范围，调整亮度、色彩或自动平滑。保留完整视频和音频，不需要 latent / VAE。"
 
