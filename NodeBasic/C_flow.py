@@ -1,3410 +1,4156 @@
-import folder_paths
-from comfy import model_management
-from comfy.utils import common_upscale
-import torch
-import numpy as np
-import av
-from PIL import Image
-import base64
+from __future__ import annotations
+import os
 import io
 import json
-import hashlib
-import asyncio
-import re
-import math
-from datetime import datetime
-from typing import Tuple
-from collections.abc import Mapping
-from fractions import Fraction
-from server import PromptServer
-from aiohttp import web
-import os
-import inspect
-import subprocess
-import nodes
-import comfy.utils
-import comfy.nested_tensor
+import time
+import mimetypes
+from comfy_api.latest import io as comfy_api_io
 from comfy_api.latest import InputImpl, Types
 from comfy_execution.graph_utils import ExecutionBlocker
+from comfy_extras.nodes_audio import vae_decode_audio
+from fractions import Fraction
+
+try:
+    from comfy_api.latest import InputImpl as _ComfyInputImpl
+except Exception:  # pragma: no cover - 兼容老版 comfy_api
+    try:
+        from comfy_api.input_impl import VideoFromFile as _VideoFromFileLegacy  # type: ignore
+
+        class _ComfyInputImpl:  # type: ignore[no-redef]
+            VideoFromFile = _VideoFromFileLegacy
+    except Exception:
+        _ComfyInputImpl = None  # type: ignore[assignment]
+
+import hashlib
+
+import numpy as np
+import torch
+from PIL import Image, ImageOps
+from typing import Dict, Any, Optional, Tuple, List
+import folder_paths
+import node_helpers
+from comfy.cli_args import args
+from server import PromptServer
+
+
+
+
+
+#--------------------------------------------------------------------
+
+from nodes import MAX_RESOLUTION, SaveImage, VAEDecode, VAELoader, common_ksampler
+import sys
+import math
+import random
+from pathlib import Path
+
+
+import inspect
+import re
+import traceback
+import itertools
+import comfy
+import comfy.nested_tensor
+import comfy.utils
+
+from .C_flow import (
+    _stage_decode_payload,
+    _stage_encode_payload,
+    _stage_run_dir,
+    _stage_checkpoint_filename,
+    _stage_batch_concat_image,
+    _stage_batch_concat_mask,
+    _stage_batch_concat_audio,
+    _stage_video_normalize_audio,
+)
+
+from aiohttp import web
+from PIL import Image, ImageOps, ImageSequence
+
+import ast
+import base64
+import glob
+import torch.nn.functional as F
+
+
+
 
 
 
 from ..main_unit import *
-from ..office_unit import ImageUpscaleWithModel,UpscaleModelLoader
+from ..office_unit import ImageCompositeMasked
 
 
 
-#region----------------lowcpu--------------------------
+#---------------------安全导入------
+try:
+    import cv2
+    REMOVER_AVAILABLE = True  
+except ImportError:
+    cv2 = None
+    REMOVER_AVAILABLE = False  
+
+try:
+    import soundfile as _sf
+    SOUNDFILE_AVAILABLE = True
+except ImportError:
+    _sf = None
+    SOUNDFILE_AVAILABLE = False
 
 
 
-GIB = 1024 ** 3
 
 
-def get_auto_reserved_vram(total_vram):
-    if total_vram <= 8.0:
-        return 0.6
-    if total_vram <= 16.0:
-        return 0.8
-    return 1.0
+#优先从当前文件所在目录下的 comfy 子目录中查找模块
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy"))  
 
-class flow_low_gpu:
+def updateTextWidget(node, widget, text):
+    PromptServer.instance.send_sync("view_Data_text_processed", {"node": node, "widget": widget, "text": text})
+
+routes = PromptServer.instance.routes
+
+
+
+
+#region-----------------基本输入-----------------
+
+class basicIn_input:
+    def __init__(self):
+        pass
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input": ("STRING", {
+                    "multiline": True,
+                    "default": ""
+                }),
+            }
+        }
+    RETURN_TYPES = ("INT", "FLOAT", "STRING")
+    RETURN_NAMES = ("int", "float", "string")
+    FUNCTION = "convert_number_types"
+    CATEGORY = "Apt_Preset/IO_Port"
+    
+    def convert_number_types(self, input):
+        try:
+            float_num = float(input)
+            int_num = int(float_num)
+            str_num = input
+        except ValueError:
+            return (None, None, input)
+        return (int_num, float_num, str_num)
+
+
+
+class basicIn_Seed:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "anything": (any_type, {}),
-                "reserved": ("FLOAT", {
-                    "default": 0.6,
-                    "min": 0.0,
-                    "max": 24.0,
-                    "step": 0.1
-                }),
-                "mode": (["manual", "auto"], {
-                    "default": "auto",
-                    "display": "Mode"
-                })
-            },
-            "hidden": {"unique_id": "UNIQUE_ID", "extra_pnginfo": "EXTRA_PNGINFO"}
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            }
         }
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("seed",)
+    FUNCTION = "pass_seed"
+    CATEGORY = "Apt_Preset/IO_Port"
 
-    RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("output",)
-    OUTPUT_NODE = True
-    FUNCTION = "set_vram"
-    CATEGORY = "Apt_Preset/flow"
-
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
-    def set_vram(self, anything, reserved, mode="auto", unique_id=None, extra_pnginfo=None):
-        requested_reserved = max(0.0, reserved)
-        device = model_management.get_torch_device()
-        device_type = getattr(device, "type", None)
-
-        if device_type in (None, "cpu", "mps"):
-            final_reserved = requested_reserved
-            print(f'flow_low_gpu: 未检测到独立GPU，使用预留值 {final_reserved:.2f}GB')
-        else:
-            total_vram = model_management.get_total_memory(device) / GIB
-            max_reserved = max(0.0, total_vram - 0.8)
-            if mode == "auto":
-                auto_reserved = get_auto_reserved_vram(total_vram)
-                final_reserved = min(max(requested_reserved, auto_reserved), max_reserved)
-                print(f'flow_low_gpu: 自动显存预留生效 | 设备={device} | 总显存={total_vram:.2f}GB | 预留={final_reserved:.2f}GB')
-            else:
-                final_reserved = min(requested_reserved, max_reserved)
-                print(f'flow_low_gpu: 手动显存预留生效 | 设备={device} | 预留={final_reserved:.2f}GB')
-
-        model_management.EXTRA_RESERVED_VRAM = int(final_reserved * GIB)
-
-        return (anything,)
+    def pass_seed(self, seed):
+        return (seed,)
 
 
-
-#endregion----------------lowcpu--------------------------
-
-
-
-
-#region----------------flow_bridge_image--------------------------
-
-try:
-    from comfy_execution.graph import ExecutionBlocker
-except ImportError:
-    class ExecutionBlocker:
-        def __init__(self, value):
-            self.value = value
-
-
-import torch
-import numpy as np
-from PIL import Image, PngImagePlugin
-import os
-import folder_paths
-import uuid
-import json
-
-lazy_options = {
-    "lazy": True
-}
-
-ExecutionBlocker = None
-try:
-    from comfy_execution.graph import ExecutionBlocker
-except ImportError:
-    class ExecutionBlocker:
-        def __init__(self, value):
-            self.value = value
-
-
-class flow_bridge_image:
-    OUTPUT_NODE = True
-
-    def __init__(self):
-        self.temp_subfolder = "zml_image_memory"
-        self.input_dir = folder_paths.get_input_directory()
-        self.prompt = None
-        self.extra_pnginfo = None
-
+class basicIn_float:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "disable_input": ("BOOLEAN", {"default": False}),
-                "disable_output": ("BOOLEAN", {"default": False}),
-            },
-            "optional": {
-                "image": ("IMAGE", lazy_options),
-                "mask": ("MASK", lazy_options),
-            },
-            "hidden": {
-                "prompt": "PROMPT",
-                "extra_pnginfo": "EXTRA_PNGINFO",
-                "unique_id": "UNIQUE_ID",
+                "input": ("STRING", {"default": "", "multiline": False})
+            }
+        }
+    RETURN_TYPES = ("FLOAT",)
+    RETURN_NAMES = ("float",)
+    FUNCTION = "convert_to_float"
+    CATEGORY = "Apt_Preset/IO_Port"
+
+    def convert_to_float(self, input):
+        try:
+            return (float(input),)
+        except (ValueError, TypeError):
+            raise ValueError("请输入有效的数字")
+
+
+class basicIn_Sampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "sampler": ( comfy.samplers.KSampler.SAMPLERS, ),
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK")
-    RETURN_NAMES = ("image", "mask")
-    FUNCTION = "store_and_retrieve"
-    CATEGORY = "Apt_Preset/flow"
+    RETURN_TYPES = (comfy.samplers.KSampler.SAMPLERS,)
+    RETURN_NAMES = ("sampler",)
+    FUNCTION = "pass_sampler"
+    CATEGORY = "Apt_Preset/IO_Port"
 
+    def pass_sampler(self, sampler):
+        return (sampler,)
+
+
+class basicIn_Scheduler:
     @classmethod
-    def IS_CHANGED(s, disable_input, disable_output, image=None, mask=None, unique_id=None, **kwargs):
-        import hashlib
-        subfolder_path = s._get_node_cache_dir(unique_id)
-        if os.path.exists(subfolder_path):
-            m = hashlib.sha256()
-            for filename in sorted(os.listdir(subfolder_path)):
-                if (
-                    (filename.startswith("bridge_image_") and filename.endswith(".png"))
-                    or (filename.startswith("bridge_mask_edit_") and filename.endswith(".png"))
-                ):
-                    filepath = os.path.join(subfolder_path, filename)
-                    if os.path.isfile(filepath):
-                        with open(filepath, 'rb') as f:
-                            m.update(f.read())
-                elif filename.endswith(".sourcehash"):
-                    filepath = os.path.join(subfolder_path, filename)
-                    if os.path.isfile(filepath):
-                        with open(filepath, 'rb') as f:
-                            m.update(f.read())
-            return m.digest().hex()
-        return ""
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
+            }
+        }
 
-    def check_lazy_status(self, disable_input, **kwargs):
-        required_inputs = []
-        if not disable_input:
-            if "image" in kwargs:
-                required_inputs.append("image")
-            if "mask" in kwargs:
-                required_inputs.append("mask")
-        return required_inputs
+    RETURN_TYPES = (comfy.samplers.KSampler.SCHEDULERS,)
+    RETURN_NAMES = ("scheduler",)
+    FUNCTION = "pass_scheduler"
+    CATEGORY = "Apt_Preset/IO_Port"
 
-    def store_and_retrieve(self, disable_input, disable_output, image=None, mask=None, prompt=None, extra_pnginfo=None, unique_id=None):
-        self.prompt = prompt
-        self.extra_pnginfo = extra_pnginfo
+    def pass_scheduler(self, scheduler):
+        return (scheduler,)
 
-        subfolder_path = self._get_node_cache_dir(unique_id)
-        os.makedirs(subfolder_path, exist_ok=True)
 
-        image_to_output = None
-        mask_to_output = None
-
-        if disable_input:
-            image_to_output, mask_to_output = self._load_from_local(subfolder_path)
-        elif image is not None:
-            # 未禁用输入时，缓存必须完全按上游 image/mask 刷新，不能保留本地编辑结果。
-            self._clear_cache_files(subfolder_path)
-            self._save_to_local(subfolder_path, image, mask)
-            self._save_source_hash(subfolder_path, self._compute_source_hash(image, mask))
-            image_to_output, mask_to_output = self._load_from_local(subfolder_path)
-            if image_to_output is None:
-                image_to_output = image
-                mask_to_output = mask
-        else:
-            image_to_output, mask_to_output = self._load_from_local(subfolder_path)
-
-        if image_to_output is None:
-            default_size = 1
-            image_to_output = torch.zeros((1, default_size, default_size, 3), dtype=torch.float32, device="cpu")
-
-        if mask_to_output is None:
-            batch_size, height, width, _ = image_to_output.shape
-            mask_to_output = torch.ones((batch_size, height, width), dtype=torch.float32, device="cpu")
-
-        self._save_preview_images(subfolder_path, image_to_output, mask_to_output)
-        ui_image_data = self._build_ui_image_data(subfolder_path, unique_id)
-
-        if disable_output and ExecutionBlocker is not None:
-            output_image = ExecutionBlocker(None)
-            output_mask = ExecutionBlocker(None)
-        else:
-            output_image = image_to_output
-            output_mask = mask_to_output
-
-        return {"ui": {"images": ui_image_data}, "result": (output_image, output_mask)}
-
+class basicIn_string:
     @classmethod
-    def _get_node_cache_dir(cls, unique_id=None):
-        node_folder = str(unique_id) if unique_id is not None else "default"
-        safe_folder = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in node_folder)
-        return os.path.join(folder_paths.get_input_directory(), "zml_image_memory", safe_folder)
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_text": ("STRING", {"default": "", "multiline": True}),
+            }
+        }
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "pass_text"
+    CATEGORY = "Apt_Preset/IO_Port"
 
-    def _build_png_metadata(self):
-        metadata = PngImagePlugin.PngInfo()
-        if self.prompt is not None:
-            try:
-                metadata.add_text("prompt", json.dumps(self.prompt))
-            except Exception:
-                pass
-        if self.extra_pnginfo is not None:
-            for key, value in self.extra_pnginfo.items():
-                try:
-                    metadata.add_text(key, json.dumps(value))
-                except Exception:
-                    pass
-        return metadata
-
-    def _build_ui_image_data(self, subfolder_path, unique_id=None):
-        ui_image_data = []
-        relative_subfolder = os.path.join(self.temp_subfolder, self._get_node_cache_name(unique_id)).replace("\\", "/")
-        preview_files = self._list_preview_images(subfolder_path)
-        if not preview_files:
-            preview_files = self._list_source_images(subfolder_path)
-        for filename in preview_files:
-            ui_image_data.append({"filename": filename, "subfolder": relative_subfolder, "type": "input"})
-        return ui_image_data
-
-    @classmethod
-    def _get_node_cache_name(cls, unique_id=None):
-        node_folder = str(unique_id) if unique_id is not None else "default"
-        return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in node_folder)
-
-    def _save_to_local(self, subfolder_path, image_tensor, mask_tensor):
-        try:
-            batch_size = image_tensor.shape[0]
-            metadata = self._build_png_metadata()
-            for i in range(batch_size):
-                current_image = image_tensor[i:i+1]
-                current_mask = mask_tensor[i:i+1] if mask_tensor is not None else None
-
-                image_np = (current_image.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                pil_image = Image.fromarray(image_np).convert("RGB")
-
-                save_path = os.path.join(subfolder_path, f"bridge_image_{i}.png")
-                pil_image.save(save_path, "PNG", pnginfo=metadata, compress_level=4)
-
-                if current_mask is not None:
-                    mask_np = (current_mask.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                    if mask_np.ndim == 3:
-                        mask_np = mask_np.squeeze(0)
-                else:
-                    mask_np = np.full((pil_image.height, pil_image.width), 255, dtype=np.uint8)
-                mask_image = Image.fromarray(mask_np, mode='L')
-                mask_save_path = os.path.join(subfolder_path, f"bridge_mask_edit_{i}.png")
-                mask_image.save(mask_save_path, "PNG", compress_level=4)
-        except Exception as e:
-            print(f"Failed to save image locally: {e}")
-
-    def _save_preview_images(self, subfolder_path, image_tensor, mask_tensor):
-        try:
-            self._remove_files_by_prefix(subfolder_path, "bridge_preview_")
-            self._remove_files_by_prefix(subfolder_path, "bridge_editor_preview_")
-            batch_size = image_tensor.shape[0]
-            metadata = self._build_png_metadata()
-            for i in range(batch_size):
-                current_image = image_tensor[i:i+1]
-                current_mask = mask_tensor[i:i+1] if mask_tensor is not None else None
-
-                image_np = (current_image.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                pil_image = Image.fromarray(image_np).convert("RGB")
-                if current_mask is not None:
-                    mask_np = (current_mask.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                    if mask_np.ndim == 3:
-                        mask_np = mask_np.squeeze(0)
-                    pil_mask = Image.fromarray(mask_np, mode='L')
-                    if pil_mask.size != pil_image.size:
-                        pil_mask = pil_mask.resize(pil_image.size, Image.NEAREST)
-                    pil_image.putalpha(pil_mask)
-
-                save_path = os.path.join(subfolder_path, f"bridge_preview_{i}.png")
-                pil_image.save(save_path, "PNG", pnginfo=metadata, compress_level=4)
-
-                editor_pil_image = Image.fromarray(image_np).convert("RGB")
-                if current_mask is not None:
-                    inverted_mask_np = 255 - mask_np
-                    editor_mask = Image.fromarray(inverted_mask_np, mode='L')
-                    if editor_mask.size != editor_pil_image.size:
-                        editor_mask = editor_mask.resize(editor_pil_image.size, Image.NEAREST)
-                    editor_pil_image.putalpha(editor_mask)
-
-                editor_save_path = os.path.join(subfolder_path, f"bridge_editor_preview_{i}.png")
-                editor_pil_image.save(editor_save_path, "PNG", pnginfo=metadata, compress_level=4)
-        except Exception as e:
-            print(f"[flow_bridge_image] Failed to save preview image locally: {e}")
-
-    def _load_from_local(self, subfolder_path):
-        try:
-            if not os.path.exists(subfolder_path):
-                return None, None
-
-            source_files = self._list_source_images(subfolder_path)
-            if not source_files:
-                return None, None
-
-            images = []
-            masks = []
-
-            for filename in source_files:
-                file_path = os.path.join(subfolder_path, filename)
-                with Image.open(file_path) as pil_image:
-                    rgb_np = np.array(pil_image.convert("RGB")).astype(np.float32) / 255.0
-                    images.append(rgb_np)
-
-                    mask_index = self._extract_file_index(filename)
-                    mask_path = os.path.join(subfolder_path, f"bridge_mask_edit_{mask_index}.png")
-                    if os.path.exists(mask_path):
-                        with Image.open(mask_path) as mask_image:
-                            masks.append(self._extract_mask_array(mask_image))
-                    else:
-                        rgba_image = pil_image.convert("RGBA")
-                        rgba_np = np.array(rgba_image).astype(np.float32) / 255.0
-                        masks.append(rgba_np[:, :, 3])
-
-            if images:
-                image_tensor = torch.from_numpy(np.stack(images))
-                mask_tensor = torch.from_numpy(np.stack(masks))
-                return image_tensor, mask_tensor
-        except Exception as e:
-            print(f"[flow_bridge_image] Failed to load image from local file: {e}")
-            import traceback
-            traceback.print_exc()
-        return None, None
-
-    def _compute_tensor_hash(self, tensor):
-        if tensor is None:
-            return "none"
-        import hashlib
-        m = hashlib.sha256()
-        m.update(str(tuple(tensor.shape)).encode("utf-8"))
-        m.update(str(tensor.dtype).encode("utf-8"))
-        m.update(tensor.detach().cpu().contiguous().numpy().tobytes())
-        return m.digest().hex()
-
-    def _compute_source_hash(self, image_tensor, mask_tensor):
-        import hashlib
-        m = hashlib.sha256()
-        m.update(self._compute_tensor_hash(image_tensor).encode("utf-8"))
-        m.update(self._compute_tensor_hash(mask_tensor).encode("utf-8"))
-        return m.digest().hex()
-
-    def _save_source_hash(self, subfolder_path, hash_value):
-        try:
-            hash_path = os.path.join(subfolder_path, "bridge_image.sourcehash")
-            with open(hash_path, 'w') as f:
-                f.write(hash_value)
-        except Exception as e:
-            print(f"[flow_bridge_image] Failed to save source hash: {e}")
-
-    def _load_source_hash(self, subfolder_path):
-        try:
-            hash_path = os.path.join(subfolder_path, "bridge_image.sourcehash")
-            if os.path.exists(hash_path):
-                with open(hash_path, 'r') as f:
-                    return f.read().strip()
-        except Exception as e:
-            print(f"[flow_bridge_image] Failed to load source hash: {e}")
-        return ""
-
-    def _list_source_images(self, subfolder_path):
-        bridge_files = [f for f in os.listdir(subfolder_path) if f.startswith("bridge_image_") and f.endswith(".png")]
-        bridge_files.sort(key=self._extract_file_index)
-        return bridge_files
-
-    def _list_preview_images(self, subfolder_path):
-        preview_files = [f for f in os.listdir(subfolder_path) if f.startswith("bridge_preview_") and f.endswith(".png")]
-        preview_files.sort(key=self._extract_file_index)
-        return preview_files
-
-    def _extract_mask_array(self, pil_image):
-        rgba_image = pil_image.convert("RGBA")
-        rgba_np = np.array(rgba_image).astype(np.float32) / 255.0
-        alpha = rgba_np[:, :, 3]
-        if float(alpha.max() - alpha.min()) > 1e-6 and not np.allclose(alpha, 1.0, atol=1e-4):
-            return alpha
-
-        rgb = rgba_np[:, :, :3]
-        return rgb.max(axis=2)
-
-    def _clear_cache_files(self, subfolder_path):
-        self._remove_files_by_prefix(subfolder_path, "bridge_image_")
-        self._remove_files_by_prefix(subfolder_path, "bridge_mask_edit_")
-        self._remove_files_by_prefix(subfolder_path, "bridge_preview_")
-        self._remove_files_by_prefix(subfolder_path, "bridge_editor_preview_")
-
-    def _remove_files_by_prefix(self, subfolder_path, prefix):
-        for filename in os.listdir(subfolder_path):
-            if filename.startswith(prefix) and filename.endswith(".png"):
-                try:
-                    os.remove(os.path.join(subfolder_path, filename))
-                except OSError as e:
-                    print(f"[flow_bridge_image] Failed to remove cache file {filename}: {e}")
-
-    @staticmethod
-    def _extract_file_index(filename):
-        stem = os.path.splitext(filename)[0]
-        try:
-            return int(stem.rsplit("_", 1)[-1])
-        except ValueError:
-            return 0
+    def pass_text(self, input_text):
+        return (input_text,)
 
 
-@PromptServer.instance.routes.post("/apt_preset/flow_bridge_image/save_edit")
-async def apt_preset_flow_bridge_image_save_edit(request):
-    try:
-        reader = await request.multipart()
-    except Exception:
-        return web.json_response({"ok": False, "error": "请求格式错误，必须使用 multipart/form-data。"}, status=400)
-
-    fields = {}
-    image_bytes = None
-    image_ref = None
-
-    while True:
-        part = await reader.next()
-        if part is None:
-            break
-        if part.name == "image":
-            image_bytes = await part.read(decode=False)
-        elif part.name == "image_ref":
-            image_ref = await part.text()
-        else:
-            fields[part.name] = await part.text()
-
-    node_id = str(fields.get("node_id", "")).strip()
-    if not node_id:
-        return web.json_response({"ok": False, "error": "缺少 node_id。"}, status=400)
-    if not image_bytes and not image_ref:
-        return web.json_response({"ok": False, "error": "缺少编辑后的图片数据。"}, status=400)
-
-    if image_ref and not image_bytes:
-        try:
-            ref_info = json.loads(image_ref)
-            filename = str(ref_info.get("filename", "")).strip()
-            subfolder = str(ref_info.get("subfolder", "")).strip().replace("\\", "/")
-            if not filename:
-                return web.json_response({"ok": False, "error": "image_ref 缺少 filename。"}, status=400)
-            input_dir = os.path.abspath(folder_paths.get_input_directory())
-            source_path = os.path.abspath(os.path.join(input_dir, subfolder, filename))
-            if not source_path.startswith(input_dir):
-                return web.json_response({"ok": False, "error": "image_ref 路径非法。"}, status=400)
-            if not os.path.exists(source_path):
-                return web.json_response({"ok": False, "error": "image_ref 指向的文件不存在。"}, status=400)
-            with open(source_path, "rb") as f:
-                image_bytes = f.read()
-        except Exception as e:
-            return web.json_response({"ok": False, "error": f"读取 image_ref 失败: {e}"}, status=400)
-
-    # #region debug-point D:save-edit-received
-    import urllib.request
-    try:
-        urllib.request.urlopen(urllib.request.Request(
-            "http://127.0.0.1:7777/event",
-            data=json.dumps({
-                "sessionId": "mask-save-lag",
-                "runId": "post-fix",
-                "hypothesisId": "D",
-                "location": "C_flow.py:apt_preset_flow_bridge_image_save_edit:received",
-                "msg": "[DEBUG] 后端收到编辑后的图片上传",
-                "data": {
-                    "node_id": node_id,
-                    "image_bytes": len(image_bytes),
-                }
-            }).encode(),
-            headers={"Content-Type": "application/json"}
-        )).read()
-    except Exception:
-        pass
-    # #endregion
-
-    cache_dir = flow_bridge_image._get_node_cache_dir(node_id)
-    os.makedirs(cache_dir, exist_ok=True)
-
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as pil_image:
-            rgba_image = pil_image.convert("RGBA")
-            rgba_np = np.array(rgba_image).astype(np.uint8)
-            alpha = rgba_np[:, :, 3]
-            if int(alpha.max()) != int(alpha.min()):
-                mask_array = alpha
-            else:
-                mask_array = rgba_np[:, :, :3].max(axis=2).astype(np.uint8)
-            mask_array = (255 - mask_array).astype(np.uint8)
-            # #region debug-point D:save-edit-parsed
-            try:
-                urllib.request.urlopen(urllib.request.Request(
-                    "http://127.0.0.1:7777/event",
-                    data=json.dumps({
-                        "sessionId": "mask-save-lag",
-                        "runId": "post-fix",
-                        "hypothesisId": "D",
-                        "location": "C_flow.py:apt_preset_flow_bridge_image_save_edit:parsed",
-                        "msg": "[DEBUG] 后端解析上传图片完成",
-                        "data": {
-                            "node_id": node_id,
-                            "mode": pil_image.mode,
-                            "size": list(pil_image.size),
-                            "alpha_min": int(alpha.min()),
-                            "alpha_max": int(alpha.max()),
-                            "mask_min": int(mask_array.min()),
-                            "mask_max": int(mask_array.max()),
-                        }
-                    }).encode(),
-                    headers={"Content-Type": "application/json"}
-                )).read()
-            except Exception:
-                pass
-            # #endregion
-            gray_image = Image.fromarray(mask_array, mode="L")
-            for filename in os.listdir(cache_dir):
-                if filename.startswith("bridge_mask_edit_") and filename.endswith(".png"):
-                    try:
-                        os.remove(os.path.join(cache_dir, filename))
-                    except OSError as e:
-                        print(f"[flow_bridge_image] Failed to remove cache file {filename}: {e}")
-
-            save_path = os.path.join(cache_dir, "bridge_mask_edit_0.png")
-            gray_image.save(save_path, "PNG", compress_level=4)
-    except Exception as e:
-        return web.json_response({"ok": False, "error": f"保存编辑结果失败: {e}"}, status=500)
-
-    safe_node_id = flow_bridge_image._get_node_cache_name(node_id)
-    view_url = f"/view?filename=bridge_mask_edit_0.png&subfolder=zml_image_memory/{safe_node_id}&type=input"
-    return web.json_response({"ok": True, "view_url": view_url})
-
-#endregion----------    
-
-
-
-
-
-class flow_case_tentor:
+class basicIn_Remap_slide:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "case_judge": (
-                    ["横向图：宽>高，为True", 
-                     "竖向图：高>宽，为True",  
-                     "正方图：宽=高，为True", 
-                     "分辨率>面积阈值,为True", 
-                     "分辨率=面积阈值,为True",                     
-                     "宽高比>比例阈值,为True", 
-                     "宽高比=比例阈值,为True",
-                     "长边>边阈值,为True",
-                     "长边=边阈值,为True",
-                     "短边>边阈值,为True",
-                     "短边=边阈值,为True",
-                     "高度>边阈值,为True",  
-                     "高度=边阈值,为True",
-                     "宽度>边阈值,为True",
-                     "宽度=边阈值,为True",
-                     "张量存在,为True",
-                     "张量数量>批次阈值,为True",
-                     "张量数量=批次阈值,为True",
-                     ], ),  
-                "area_threshold": ("STRING", {"default": "1048576.0", "tooltip": "支持加减乘除四则运算表达式，例如:1024*1024、(2000+500)/2"}),
-                "ratio_threshold": ("STRING", {"default": "1.0", "tooltip": "支持加减乘除四则运算表达式，例如:16/9、4/3+0.2"}),
-                "edge_threshold": ("INT", {"default": 1024, "min": 1, "max": 99999, "step": 1}),
-                "batch_threshold": ("INT", {"default": 1, "min": 1, "max": 9999, "step": 1, "tooltip": "遮罩或图片或latent，批次数量"}),
-
+                "source_min": ("FLOAT", {"default": 0.0, "min": -9999, "max": 9999, "step": 0.001}),
+                "source_max": ("FLOAT", {"default": 1.0, "min": -9999, "max": 9999, "step": 0.001}),
+                "slide": ("FLOAT", {"default": 0.0, "min": 0, "max": 1, "step": 0.001, "display": "slider"}),
+                "precision": ("FLOAT", {"default": 0.001, "min": 0.001, "max": 1000, "step": 0.001}),
             },
             "optional": {
-                "data": (any_type,),
-            }
-        }  
-    
-    RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("boolean",)
-    FUNCTION = "check_event"
-    CATEGORY = "Apt_Preset/flow"
+            },
+        }
 
-    # 新增：安全解析表达式并返回float的核心方法
-    def safe_calc_float(self, expr_str):
-        if not expr_str or expr_str.strip() == "":
-            return 0.0
-        # 只保留 数字/+-*/().  过滤所有非法字符，保证安全执行
-        safe_expr = ''.join([c for c in expr_str.strip() if c in '0123456789+-*/().'])
-        try:
-            # 执行表达式计算并强转float
-            result = float(eval(safe_expr))
-            return result if result >= 0 else 0.0
-        except:
-            # 表达式解析失败/计算报错，返回默认值
-            return 0.0
-    
-    def check_event(self, case_judge, area_threshold,  batch_threshold, ratio_threshold, edge_threshold, data=None) -> Tuple[bool]:
-        # ========== 核心修复1：空data(空图片) 直接返回 False，取消抛异常 ==========
-        if data is None:
-            return (False,)
+    FUNCTION = "set_range"
+    RETURN_TYPES = ("FLOAT", "FLOAT", )
+    RETURN_NAMES = ("source_value", "slide_value", )
+    CATEGORY = "Apt_Preset/IO_Port"
+
+    def set_range(self, source_min, source_max, precision, slide):
+
+        step = max(0.0001, precision)           
+        slide_rounded = round(slide / step) * step
         
-        # 核心修改：解析文本表达式为float数值
-        area_threshold_val = self.safe_calc_float(area_threshold)
-        ratio_threshold_val = self.safe_calc_float(ratio_threshold)
+        source_value = source_min + (source_max - source_min) * slide_rounded        
+        slide_value = slide_rounded
+        
+        return (source_value, slide_value)
+
+
+
+class basicIn_int:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input": ("INT", { "min": 0, "max": 16384,  "step": 1,})
+            }
+        }
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("int",)
+    FUNCTION = "convert_to_int"
+    CATEGORY = "Apt_Preset/IO_Port"
+
+    def convert_to_int(self, input):
+        try:
+            return (int(input),)
+        except (ValueError, TypeError):
+            return (None,)
+
+
+class basicIn_Boolean:
+    CATEGORY = "Apt_Preset/IO_Port"
+    INPUT_TYPES = lambda: {
+        "required": {
+            "boolean_value": ("BOOLEAN", {
+                "default": False,
+                "label_on": "True",
+                "label_off": "False"
+            })
+        }
+    }
+    RETURN_TYPES = ("BOOLEAN", "BOOLEAN")
+    RETURN_NAMES = ("BOOL", "INVERTED_BOOL")
+    FUNCTION = "get_boolean"
+
+    def get_boolean(self, boolean_value):
+        inverted_value = not boolean_value
+        return (boolean_value, inverted_value)
+
+
+
+class basicIn_INOUT:
+    CATEGORY = "Apt_Preset/IO_Port"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "optional": {
+                "image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", )
+    RETURN_NAMES = ("image", )
+    FUNCTION = "pass_through"
+
+    def pass_through(self, image=None):
+        return (image,)
+
+
+#endregion-----------------基本输入-----------------
+
+
+
+#region-----------------------收纳-------------------------------------------------------#
+
+
+
+class view_mask(SaveImage):
+    
+    def __init__(self):
+        self.output_dir = folder_paths.get_temp_directory()
+        self.type = "temp"
+        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5))
+        self.compress_level = 4
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {"mask": ("MASK",), },  
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+        }
+
+    FUNCTION = "execute"
+    CATEGORY = "Apt_Preset/PreView"
+    OUTPUT_NODE = True
+    DESCRIPTION = "show mask"
+    
+    def execute(self, mask, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        if isinstance(mask, list):
+            processed_masks = []
+            for m in mask:
+                if isinstance(m, torch.Tensor):
+                    processed = self.process_single_mask(m)
+                    processed_masks.append(processed)
             
-        if case_judge == "横向图：宽>高，为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
+            if processed_masks:
+                preview = torch.cat(processed_masks, dim=0)
             else:
-                height, width = data.shape[1], data.shape[2]
-                result = width > height
-        
-        elif case_judge == "竖向图：高>宽，为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                result = height > width
-        
-        elif case_judge == "正方图：宽=高，为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                result = width == height
-        
-        elif case_judge == "分辨率>面积阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                resolution = width * height
-                result = resolution > area_threshold_val
-        
-        elif case_judge == "分辨率=面积阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                resolution = width * height
-                result = resolution == area_threshold_val
-        
-        elif case_judge == "宽高比>比例阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                if height == 0:
-                    result = False
-                else:
-                    aspect_ratio = width / height
-                    result = aspect_ratio > ratio_threshold_val
-        
-        elif case_judge == "宽高比=比例阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                if height == 0:
-                    result = False
-                else:
-                    aspect_ratio = width / height
-                    result = aspect_ratio == ratio_threshold_val
-        
-        elif case_judge == "长边>边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                long_side = max(width, height)
-                result = long_side > edge_threshold
-        
-        elif case_judge == "长边=边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                long_side = max(width, height)
-                result = long_side == edge_threshold
-        
-        elif case_judge == "短边>边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                short_side = min(width, height)
-                result = short_side > edge_threshold
-        
-        elif case_judge == "短边=边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height, width = data.shape[1], data.shape[2]
-                short_side = min(width, height)
-                result = short_side == edge_threshold
-        
-        elif case_judge == "高度>边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height = data.shape[1]
-                result = height > edge_threshold
-        
-        elif case_judge == "高度=边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                height = data.shape[1]
-                result = height == edge_threshold
-        
-        elif case_judge == "宽度>边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                width = data.shape[2]
-                result = width > edge_threshold
-        
-        elif case_judge == "宽度=边阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) == 4):
-                result = False
-            else:
-                width = data.shape[2]
-                result = width == edge_threshold
-        
-        elif case_judge == "张量存在,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) in [3, 4]):
-                result = False
-            else:
-                mask_sum = torch.sum(data).item()  
-                result = mask_sum > 0  
-        
-        elif case_judge == "张量数量>批次阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) in [3, 4]):
-                result = False
-            else:
-                batch_size = data.shape[0]  
-                result = batch_size > batch_threshold
-        
-        elif case_judge == "张量数量=批次阈值,为True":
-            if not (isinstance(data, torch.Tensor) and len(data.shape) in [3, 4]):
-                result = False
-            else:
-                batch_size = data.shape[0]  
-                result = batch_size == batch_threshold
-        
+                return {"ui": {"images": []}}
+        elif isinstance(mask, torch.Tensor):
+            preview = self.process_single_mask(mask)
         else:
-            # ========== 核心修复2：未知判断模式 也返回 False，取消抛异常 ==========
-            result = False
+            return {"ui": {"images": []}}
         
-        return (result,)
-
-
-
-
-class XXXXflow_sch_XXXcontrol:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                #"seed": ("INT", {"default": 0, "min": -999999, "max": 0xffffffffffffffff}),
-                "total": ("INT", {"default": 10, "min": 0, "max": 5000} ),
-                "种子": ("INT", {"default": -1, "min": -1, "max": 0xffffffffffffffff}),
-                "种子控制": (["随机", "固定", "递增"], {"default": "递增"}),
-            },
-            "optional": {
-            },
-        }
-
-    FUNCTION = "set_range"
-    RETURN_TYPES = ("INT", "INT",)
-    RETURN_NAMES = ("seedIndex", "total",)
-    CATEGORY = "Apt_Preset/flow"
-
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        seed_control = kwargs.get("种子控制", "随机")
-        seed = kwargs.get("种子", -1)
-        if seed_control in ["随机", "递增"]:
-            return float("nan")
-        return seed
-    def __init__(self):
-        self.last_seed = -1
-    def _effective_seed(self, seed: int, seed_control: str) -> int:
-        import random
-        if seed_control == "固定":
-            effective_seed = seed if seed != -1 else random.randint(0, 2147483647)
-        elif seed_control == "随机":
-            effective_seed = random.randint(0, 2147483647)
-        elif seed_control == "递增":
-            if self.last_seed == -1:
-                effective_seed = seed if seed != -1 else random.randint(0, 2147483647)
-            else:
-                effective_seed = self.last_seed + 1
+        return self.save_images(preview, filename_prefix, prompt, extra_pnginfo)
+    
+    def process_single_mask(self, mask_tensor):
+        if mask_tensor.dim() == 2:
+            return mask_tensor.unsqueeze(0).unsqueeze(0).movedim(1, -1).expand(-1, -1, -1, 3)
+        elif mask_tensor.dim() == 3:
+            return mask_tensor.unsqueeze(1).movedim(1, -1).expand(-1, -1, -1, 3)
         else:
-            effective_seed = random.randint(0, 2147483647)
-        self.last_seed = effective_seed
-        return effective_seed
-
-    def set_range(
-        self,
-        seed,
-        total,
-    ):
-        
-        value = seed + 1    
-        return (value, total)
+            return mask_tensor.reshape((-1, 1, mask_tensor.shape[-2], mask_tensor.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
 
 
 
+class view_combo:     # web_node/view_Data_text.js
 
-class flow_sch_control:
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "seed": ("INT", {"default": 0, "min": -999999, "max": 0xffffffffffffffff}),
-                "total": ("INT", {"default": 10, "min": 0, "max": 5000} ),
-            },
-            "optional": {
-            },
-        }
-
-    FUNCTION = "set_range"
-    RETURN_TYPES = ("INT", "INT",)
-    RETURN_NAMES = ("seedIndex", "total",)
-    CATEGORY = "Apt_Preset/flow/other"
-
-    def set_range(
-        self,
-        seed,
-        total,
-    ):
-        
-        value = seed + 1    
-        return (value, total)
-
-
-
-
-class flow_QueueTrigger:
-    @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {"required": {
-                    "Index": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                    "total": ("INT", {"default": 10, "min": 1, "max": 0xffffffffffffffff}),
-                    "mode": ("BOOLEAN", {"default": True, "label_on": "Trigger", "label_off": "Don't trigger"}),
+                    "prompt": ("STRING", {"multiline": True, "default": "text"}),
+                    "start_index": ("INT", {"default": 0, "min": 0, "max": 9999}),
+                    "max_rows": ("INT", {"default": 1000, "min": 1, "max": 9999}),
                     },
-                "optional": {},
-                "hidden": {"unique_id": "UNIQUE_ID"}
-                }
-
-    FUNCTION = "doit"
-
-    CATEGORY = "Apt_Preset/🚫Deprecated/🚫"
-    RETURN_TYPES = ("INT", "INT")
-    RETURN_NAMES = ("Index", "total")
-    OUTPUT_NODE = True     
-    NAME = "flow_QueueTrigger"
-
-
-    def doit(self, Index, total, mode, unique_id):  
-        if mode:
-            if Index < total - 1:
-                PromptServer.instance.send_sync("node-feedback",
-                                                {"node_id": unique_id, "widget_name": "Index", "type": "int", "value": Index + 1})
-                PromptServer.instance.send_sync("add-queue", {})
-            elif Index >= total - 1:
-                PromptServer.instance.send_sync("node-feedback",
-                                                {"node_id": unique_id, "widget_name": "Index", "type": "int", "value": 0})
-
-        return (Index, total)
-
-
-
-
-
-
-class flow_tensor_Unify:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "keep_alpha": ("BOOLEAN", {"default": False, "label_on": "4 Channels", "label_off": "3 Channels"}),
-            },
-            "optional": {
-                "image": ("IMAGE",),
-                "mask": ("MASK",)
-            }
-        }
-    
-    RETURN_TYPES = ("IMAGE", "MASK")
-    RETURN_NAMES = ("unified_image", "unified_mask")
-    FUNCTION = "unify_media"
-    CATEGORY = "Apt_Preset/flow/other"
-    
-    def unify_media(self, keep_alpha=False, image=None, mask=None):
-        if image is None:
-            c = 4 if keep_alpha else 3
-            unified_image = torch.zeros((1, 64, 64, c), dtype=torch.float32)
-        else:
-            img_np = image.cpu().numpy()
-            b, h, w, c = img_np.shape
-            
-            if c == 1:
-                img_np = np.repeat(img_np, 3, axis=-1)
-                c = 3
-            elif c in [3,4]:
-                pass
-            elif b in [3,4] and c == 1:
-                img_np = np.transpose(img_np, (1, 2, 0))[np.newaxis, ...]
-                b, h, w, c = img_np.shape
-
-            if img_np.dtype != np.float32:
-                img_np = img_np.astype(np.float32) / 255.0 if img_np.max() > 1 else img_np.astype(np.float32)
-
-            img_np = np.clip(img_np, 0.0, 1.0)
-
-            if keep_alpha:
-                if c == 3:
-                    alpha_channel = np.ones((b, h, w, 1), dtype=img_np.dtype)
-                    img_np = np.concatenate([img_np, alpha_channel], axis=-1)
-            else:
-                if c >= 3:
-                    img_np = img_np[:, :, :, :3]
-
-            unified_image = torch.from_numpy(img_np).to(image.device)
-
-        if mask is None:
-            unified_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
-        else:
-            mask_np = mask.cpu().numpy()
-
-            if len(mask_np.shape) == 4:
-                mask_np = mask_np[..., 0]
-            elif len(mask_np.shape) == 3 and mask_np.shape[-1] in [1,3,4]:
-                mask_np = mask_np[..., 0]
-            elif len(mask_np.shape) == 2:
-                mask_np = mask_np[np.newaxis, ...]
-
-            if mask_np.dtype != np.float32:
-                mask_np = mask_np.astype(np.float32) / 255.0 if mask_np.max() > 1 else mask_np.astype(np.float32)
-
-            mask_np = np.clip(mask_np, 0.0, 1.0)
-
-            unified_mask = torch.from_numpy(mask_np).to(mask.device)
-
-        return (unified_image, unified_mask)
-
-
-
-#region--------------IN/out-switch--------------------------
-
-class flow_BooleanSwitch:
-    def __init__(self):
-        self.stored_data = None
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "switch": ("BOOLEAN", {"default": True, "label_on": "On", "label_off": "Off"}),
-                "store": ("BOOLEAN", {"default": True,}),
-            },
-            "optional": {
-                "any_input": (any_type,),
-            }
-        }
-
-    RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("any_output",)
-    FUNCTION = "process"
-    CATEGORY = "Apt_Preset/flow"
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, input_types):
-        return True
-
-    def process(self, switch, store, any_input=None):
-        if store and any_input is not None:
-            self.stored_data = any_input
-
-        if switch:
-            if any_input is not None:
-                return (any_input,)
-            elif store and self.stored_data is not None:
-                return (self.stored_data,)
-            else:
-                if ExecutionBlocker is not None:
-                    return (ExecutionBlocker(None),)
-                else:
-                    return ({},)
-        else:
-            if ExecutionBlocker is not None:
-                return (ExecutionBlocker(None),)
-            else:
-                return ({},)
-
-
-class flow_stage_index_switch:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "stage_index": ("INT", {"default": 1, "min": 1, "max": 10000, "step": 1}),
-                "open_stage_index": ("INT", {"default": 1, "min": 1, "max": 10000, "step": 1}),
-            },
-            "optional": {
-                "any_input": (any_type, {"lazy": True}),
-            },
-        }
-
-    RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("any_output",)
-    FUNCTION = "process"
-    CATEGORY = "Apt_Preset/flow"
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, input_types):
-        return True
-
-    def check_lazy_status(self, stage_index, open_stage_index, any_input=None):
-        if stage_index == open_stage_index and any_input is None:
-            return ["any_input"]
-        return []
-
-    def process(self, stage_index, open_stage_index, any_input=None):
-        if stage_index == open_stage_index and any_input is not None:
-            return (any_input,)
-
-        if ExecutionBlocker is not None:
-            return (ExecutionBlocker(None),)
-        return ({},)
-
-
-def _frame_slice_indices(length, start_frame, end_frame, device=None):
-    if length < 1:
-        raise ValueError("flow_frame_slice: input contains no frames")
-
-    def normalize(index):
-        index = int(index)
-        if index < 0:
-            index += length
-        return max(0, min(length - 1, index))
-
-    start = normalize(start_frame)
-    end = normalize(end_frame)
-    step = 1 if start <= end else -1
-    return torch.arange(start, end + step, step, device=device, dtype=torch.long)
-
-
-def _frame_slice_tensor(tensor, indices, dim=0):
-    return torch.index_select(tensor, dim, indices.to(tensor.device)).clone()
-
-
-class flow_frame_slice:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "start_frame": ("INT", {"default": 0, "min": -2147483648, "max": 2147483647, "step": 1}),
-                "end_frame": ("INT", {"default": -1, "min": -2147483648, "max": 2147483647, "step": 1}),
-            },
-            "optional": {
-                "image": ("IMAGE",),
-                "latent": ("LATENT",),
-                "video": ("VIDEO",),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE", "LATENT", "VIDEO")
-    RETURN_NAMES = ("image", "latent", "video")
-    FUNCTION = "slice_frames"
-    CATEGORY = "Apt_Preset/flow"
-
-    def slice_frames(self, start_frame=0, end_frame=-1, image=None, latent=None, video=None):
-        image_out = ExecutionBlocker(None)
-        latent_out = ExecutionBlocker(None)
-        video_out = ExecutionBlocker(None)
-
-        if image is not None:
-            indices = _frame_slice_indices(image.shape[0], start_frame, end_frame, image.device)
-            image_out = _frame_slice_tensor(image, indices)
-
-        if latent is not None:
-            samples = latent.get("samples")
-            if not isinstance(samples, torch.Tensor):
-                raise TypeError("flow_frame_slice: latent samples must be a tensor")
-            indices = _frame_slice_indices(samples.shape[0], start_frame, end_frame, samples.device)
-            latent_out = latent.copy()
-            latent_out["samples"] = _frame_slice_tensor(samples, indices)
-
-            noise_mask = latent.get("noise_mask")
-            if isinstance(noise_mask, torch.Tensor):
-                if noise_mask.shape[0] == samples.shape[0]:
-                    latent_out["noise_mask"] = _frame_slice_tensor(noise_mask, indices)
-                else:
-                    latent_out["noise_mask"] = noise_mask.clone()
-
-            batch_index = latent.get("batch_index")
-            if isinstance(batch_index, (list, tuple)) and len(batch_index) == samples.shape[0]:
-                latent_out["batch_index"] = [batch_index[index] for index in indices.cpu().tolist()]
-
-        if video is not None:
-            components = video.get_components()
-            images = components.images
-            indices = _frame_slice_indices(images.shape[0], start_frame, end_frame, images.device)
-            video_images = _frame_slice_tensor(images, indices)
-
-            alpha = components.alpha
-            if isinstance(alpha, torch.Tensor):
-                if alpha.ndim > 0 and alpha.shape[0] == images.shape[0]:
-                    alpha = _frame_slice_tensor(alpha, indices)
-                else:
-                    alpha = alpha.clone()
-
-            audio = components.audio
-            if audio is not None:
-                frame_rate = float(components.frame_rate)
-                if frame_rate <= 0:
-                    raise ValueError("flow_frame_slice: video frame rate must be greater than zero")
-                waveform = audio.get("waveform")
-                sample_rate = int(audio.get("sample_rate", 0))
-                if isinstance(waveform, torch.Tensor) and sample_rate > 0:
-                    selected = indices.cpu()
-                    first_frame = int(selected.min().item())
-                    last_frame = int(selected.max().item()) + 1
-                    sample_start = round(first_frame / frame_rate * sample_rate)
-                    sample_end = round(last_frame / frame_rate * sample_rate)
-                    waveform = waveform[..., sample_start:sample_end].clone()
-                    if int(selected[0]) > int(selected[-1]):
-                        waveform = torch.flip(waveform, dims=(-1,))
-                    audio = dict(audio)
-                    audio["waveform"] = waveform
-
-            video_components = Types.VideoComponents(
-                images=video_images,
-                alpha=alpha,
-                audio=audio,
-                frame_rate=components.frame_rate,
-                metadata=components.metadata,
-            )
-            bit_depth = video.get_bit_depth() if hasattr(video, "get_bit_depth") else 8
-            video_out = InputImpl.VideoFromComponents(video_components, bit_depth=bit_depth)
-
-        return image_out, latent_out, video_out
-
-
-
-class flow_judge_output:
-    
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "data": (any_type, {}),
-                "judge": ("BOOLEAN", {"default": True}),
+            "hidden":{
+                "workflow_prompt": "PROMPT", "my_unique_id": "UNIQUE_ID"
             }
         }
 
     RETURN_TYPES = (any_type, any_type)
-    RETURN_NAMES = ("true", "false")
-    FUNCTION = "judge_output"
-    CATEGORY = "Apt_Preset/flow"
-    OUTPUT_NODE = False
+    RETURN_NAMES = ("STRING", "COMBO")
+    OUTPUT_IS_LIST = (True, True)
+    FUNCTION = "generate_strings"
+    CATEGORY = "Apt_Preset/PreView"
+    NAME = "view_combo"
 
-    def judge_output(self, data, judge=True):
-        # 根据judge布尔值判断输出端口
-        if judge:
-            true_output = data
-            false_output = ExecutionBlocker(None) if ExecutionBlocker is not None else {}
-        else:
-            true_output = ExecutionBlocker(None) if ExecutionBlocker is not None else {}
-            false_output = data
+
+    def generate_strings(self, prompt, start_index, max_rows, workflow_prompt=None, my_unique_id=None):
+        lines = prompt.split('\n')
+
+        start_index = max(0, min(start_index, len(lines) - 1))
+        end_index = min(start_index + max_rows, len(lines))
+        rows = lines[start_index:end_index]
+
+        return (rows, rows)
+
+
+
+
+class IO_node_Script:
+    def __init__(self):
+        self.node_list = []
+        self.custom_node_list = []
+        self.update_node_list()
+
+    def update_node_list(self):
+        try:
+            import nodes
+            self.node_list = []
+            self.custom_node_list = []
             
-        return {"ui": {"value": [judge]}, "result": (true_output, false_output)}
+            for node_name, node_class in nodes.NODE_CLASS_MAPPINGS.items():
+                try:
+                    module = inspect.getmodule(node_class)
+                    module_path = getattr(module, '__file__', '')
+                    is_custom = 'custom_nodes' in module_path
 
+                    node_info = {
+                        'name': node_name,
+                        'class_name': node_class.__name__,
+                        'category': getattr(node_class, 'CATEGORY', 'Uncategorized'),
+                        'description': getattr(node_class, 'DESCRIPTION', ''),
+                        'is_custom': is_custom
+                    }
+                    
+                    self.node_list.append(node_info)
+                    if is_custom:
+                        self.custom_node_list.append(node_info)
+                except Exception as e:
+                    logging.error(f"Error processing node {node_name}: {str(e)}")
+                    continue
+            
+            self.node_list.sort(key=lambda x: x['name'])
+            self.custom_node_list.sort(key=lambda x: x['name'])
+            
+        except Exception as e:
+            logging.error(f"Error updating node list: {str(e)}")
+            traceback.print_exc()
 
-class flow_judge_input:
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "judge": ("BOOLEAN", {"default": True, "label_on": "✅ True", "label_off": "❌ False"}), # 美化开关文字
-            },
-            "optional": {
-                "true": (any_type, {"lazy": True}),
-                "false": (any_type, {"lazy": True}),
+        try:
+            import nodes
+            node_names = sorted(list(nodes.NODE_CLASS_MAPPINGS.keys()))
+            if not node_names:
+                node_names = ["No nodes found"]
+                
+            return {
+                "required": {
+                    "selected_node": (node_names, {
+                        "default": node_names[0]
+                    }),
+                    "search": ("STRING", {
+                        "default": "",
+                        "multiline": False
+                    }),
+                    "show_all": ("BOOLEAN", {
+                        "default": True,
+                        "label": "Show All Nodes"
+                    }),
+                    "refresh_list": ("BOOLEAN", {
+                        "default": False,
+                        "label": "Refresh Node List"
+                    })
+                }
             }
-        }
+        except Exception as e:
+            print(f"Error in INPUT_TYPES: {str(e)}")
+            return {
+                "required": {
+                    "search": ("STRING", {"default": "", "multiline": False}),
+                    "show_all": ("BOOLEAN", {"default": True, "label": "Show All Nodes"}),
+                    "refresh_list": ("BOOLEAN", {"default": False, "label": "Refresh Node List"})
+                }
+            }
 
-    RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("data",)
-    FUNCTION = "execute"
-    CATEGORY = "Apt_Preset/flow"
-    OUTPUT_NODE = False
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("node_source",)
+    FUNCTION = "find_script"
+    CATEGORY = "Apt_Preset/IO_Port"
+    NAME = "IO_node_Script"
 
-    # 懒加载校验逻辑不变
-    def check_lazy_status(self, judge, true=None, false=None):
-        needed = []
-        if judge:
-            if true is None:
-                needed.append('true')
-        else:
-            if false is None:
-                needed.append('false')
-        return needed
+    def get_node_source_code(self, node_name):
+        try:
+            import nodes
+            import inspect
+            import os
 
-    def execute(self, judge, true=None, false=None):
-        if judge:
-            result_value = true if true is not None else false
-        else:
-            result_value = false if false is not None else true
-            
-        # 空值兜底不变
-        if result_value is None:
+            node_class = nodes.NODE_CLASS_MAPPINGS.get(node_name)
+            if not node_class:
+                return f"Node '{node_name}' not found"
+
+            module = inspect.getmodule(node_class)
+            if not module:
+                return f"Could not find module for {node_name}"
+
             try:
-                from nodes import ExecutionBlocker # 显式导入，兼容性更强
-                result_value = ExecutionBlocker(None)
-            except:
-                result_value = {}
+                file_path = inspect.getfile(module)
+            except TypeError:
+                return f"Could not determine file path for {node_name}"
+
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+            except Exception as e:
+                return f"Error reading file: {str(e)}"
+
+            class_def = f"class {node_class.__name__}:"
+            class_start = file_content.find(class_def)
+            
+            if class_start == -1:
+                return f"Could not find class definition for {node_name}"
+
+            lines = file_content[class_start:].split('\n')
+            class_lines = []
+            indent_level = None
+
+            for line in lines:
+                if indent_level is None:
+                    if line.strip().startswith('class'):
+                        indent_level = len(line) - len(line.lstrip())
+                    continue
+
+                current_indent = len(line) - len(line.lstrip())
+                if current_indent <= indent_level and line.strip():
+                    break
+
+                class_lines.append(line)
+
+            source_output = f"=== Node: {node_name} ===\n"
+            source_output += f"File: {file_path}\n\n"
+            source_output += "=== Source Code ===\n"
+            source_output += "\n".join(class_lines)
+
+            return source_output
+
+        except Exception as e:
+            return f"Error retrieving source code: {str(e)}"
+
+    def find_script(self, selected_node, search, show_all, refresh_list):
+        try:
+            if refresh_list:
+                self.update_node_list()
+
+            if selected_node:
+                source_code = self.get_node_source_code(selected_node)
+                return (source_code,)
+            return ("Please select a node to view its source code",)
+
+        except Exception as e:
+            logging.error(f"Error in find_script: {str(e)}")
+            traceback.print_exc()
+            return (traceback.format_exc(),)
+
+
+
+
+
+
+
+
+
+class IPA_clip_vision:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { 
+            "clip_name": (folder_paths.get_filename_list("clip_vision"), ),
+            "image": ("IMAGE",),
+        }}
+    RETURN_TYPES = ("CLIP_VISION_OUTPUT",)
+    FUNCTION = "combined_process"
+
+    CATEGORY = "Apt_Preset/chx_tool/chx_IPA"
+
+    def combined_process(self, clip_name, image):
+        # 加载 CLIP Vision 模型
+        clip_path = folder_paths.get_full_path_or_raise("clip_vision", clip_name)
+        clip_vision = comfy.clip_vision.load(clip_path)
+        if clip_vision is None:
+            raise RuntimeError("ERROR: clip vision file is invalid and does not contain a valid vision model.")
         
-        return (result_value,)
+        output = clip_vision.encode_image(image, crop="center")
+        return (output,)
 
 
 
-class flow_switch_output:
+
+
+class view_Data:   
+
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "required": {
-                "any_input": (any_type, {}),
-                "index": ("INT", {"default": 1, "min": 1, "max": 5, "step": 1}),
-            }
+            "optional": {
+                "any": (anyType, {"forceInput": True}),
+                "data": ("STRING", {"default": "", "multiline": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
-    RETURN_TYPES = (any_type, any_type, any_type, any_type, any_type)
-    RETURN_NAMES = ("output_1", "output_2", "output_3", "output_4", "output_5")
-    FUNCTION = "switch_output"
-    CATEGORY = "Apt_Preset/flow"
-    OUTPUT_NODE = False
+    RETURN_TYPES = (anyType,)
+    RETURN_NAMES = ("any",)
+    OUTPUT_IS_LIST = (True,)
+    OUTPUT_NODE = True
+    NAME = "view_Data"
+    CATEGORY = "Apt_Preset/PreView"
+    FUNCTION = "process"
+    INPUT_IS_LIST = True
 
-    def switch_output(self, any_input, index=1):
-        outputs = []
-        for i in range(5):
-            if i == index - 1:  
-                outputs.append(any_input)
-            else: 
-                if ExecutionBlocker is not None:
-                    outputs.append(ExecutionBlocker(None))
-                else:
-                    outputs.append({})
-        
-        return tuple(outputs)
+    def process(self, data, unique_id, any=None):
+        # 兼容 INPUT_IS_LIST=True 时可能传入空列表的情况
+        if any is None or (isinstance(any, list) and len(any) == 0):
+            return comfy_api_io.NodeOutput([], ui={"data": ["None"]})
+
+        displayText = self.render(any)
+
+        # 这里 unique_id 是个列表
+        uid = unique_id[0] if isinstance(unique_id, list) and len(unique_id) > 0 else unique_id
+        updateTextWidget(uid, "data", displayText)
+        return comfy_api_io.NodeOutput(any, ui={"data": [displayText]})
+
+    def render(self, any):
+        if isinstance(any, list):
+            listLen = len(any)
+            if listLen > 1:
+                result = "List:\n"
+                for i, element in enumerate(any):
+                    result += f"[#{i}] {str(any[i])}\n"
+                return result
+            if listLen == 1:
+                value = any[0]
+            else:
+                value = ""
+        else:
+            value = any
+
+        if value is None:
+            return "None"
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        try:
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        except Exception:
+            return str(value)
 
 
 
-class flow_switch_input:
 
+#------View_bridge_tentor--------
+def _bridge_vae_choices(marker):
+    names = folder_paths.get_filename_list("vae")
+    default = next((name for name in names if marker in name.lower()), "None")
+    return ["None", *names], default
+
+
+def _bridge_mask(latent):
+    mask = latent.get("mask")
+    if mask is None:
+        mask = latent.get("noise_mask")
+    if isinstance(mask, comfy.nested_tensor.NestedTensor):
+        mask = mask.unbind()[0]
+    if not isinstance(mask, torch.Tensor):
+        return ExecutionBlocker(None)
+    if mask.ndim == 2:
+        return mask.unsqueeze(0)
+    if mask.ndim == 3:
+        return mask
+    if mask.ndim == 4 and mask.shape[1] == 1:
+        return mask[:, 0]
+    if mask.ndim == 4 and mask.shape[-1] == 1:
+        return mask[..., 0]
+    if mask.ndim == 5 and mask.shape[1] == 1:
+        return mask[:, 0].flatten(0, 1)
+    return ExecutionBlocker(None)
+
+
+def _bridge_text(latent):
+    for key in ("text", "prompt", "apt_h3_text", "apt_h3_prompt"):
+        value = latent.get(key)
+        if value is not None:
+            return value if isinstance(value, str) else str(value)
+    return ExecutionBlocker(None)
+
+
+def _bridge_align_audio(audio, trim_frames, export_frames, fps):
+    if audio is None:
+        return None
+    waveform = audio["waveform"]
+    sample_rate = int(audio["sample_rate"])
+    if trim_frames > 0:
+        start = min(int(round(trim_frames / fps * sample_rate)), int(waveform.shape[-1]))
+        waveform = waveform[..., start:]
+    if export_frames > 0:
+        wanted = max(1, int(round(export_frames / fps * sample_rate)))
+        if waveform.shape[-1] < wanted:
+            waveform = F.pad(waveform, (0, wanted - waveform.shape[-1]))
+        else:
+            waveform = waveform[..., :wanted]
+    output = dict(audio)
+    output["waveform"] = waveform
+    output["sample_rate"] = sample_rate
+    return output
+
+
+class View_bridge_tentor:
     @classmethod
     def INPUT_TYPES(cls):
+        vae_names, vae_default = _bridge_vae_choices("minimax_h3_video_vae")
+        audio_vae_names, audio_vae_default = _bridge_vae_choices("minimax_h3_audio_vae")
         return {
             "required": {
-                "input_method": ("BOOLEAN", {"default": True, "label_on": "第一个有效值", "label_off": "按编号"}),
-                "input_index": ("INT", {"default": 1, "min": 1, "max": 5, "step": 1}),
+                "bridge_latent": ("LATENT",),
+                "vae": (vae_names, {"default": vae_default}),
+                "audio_vae": (audio_vae_names, {"default": audio_vae_default}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.01}),
             },
-            "optional": {
-                "in1": (any_type,),
-                "in2": (any_type,),
-                "in3": (any_type,),
-                "in4": (any_type,),
-                "in5": (any_type,),
-            }
         }
 
-    RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ('out',)
-    CATEGORY = "Apt_Preset/flow"
-    FUNCTION = "switch"
+    INPUT_IS_LIST = True
+    RETURN_TYPES = ("IMAGE", "VIDEO", "AUDIO", "MASK", "STRING")
+    RETURN_NAMES = ("image", "video", "audio", "mask", "text")
+    FUNCTION = "decode"
+    CATEGORY = "Apt_Preset/PreView"
+    DESCRIPTION = "Decode one bridge latent, or decode and merge an ordered list of stage payloads."
 
-    def switch(self, input_method, input_index,
-               in1=None, in2=None, in3=None, in4=None, in5=None):
-        inputs = [in1, in2, in3, in4, in5]
-        
-        if input_method:
-            selected_value = None
-            for value in inputs:
-                if not self.is_none(value):
-                    selected_value = value
-                    break
-        else:
-            index = input_index - 1
-            if 0 <= index < len(inputs):
-                selected_value = inputs[index]
-            else:
-                selected_value = None
-        
-        if selected_value is None:
-            for value in inputs:
-                if value is not None:
-                    selected_value = value
-                    break
-    
-        if selected_value is None:
-            if ExecutionBlocker is not None:
-                return (ExecutionBlocker(None),)
-            else:
-                return ({},)
-        
-        return (selected_value,)
-
-    def is_none(self, value):
-        if value is not None:
-            if isinstance(value, dict) and 'model' in value and 'clip' in value:
-                return all(v is None for v in value.values())
-        return value is None
-
-
-#endregion----------------IN/out-switch--------------------------
-
-
-
-
-
-#region---------------loop team-------------
-
-
-class AlwaysEqualProxy(str):
-    def __eq__(self, _): return True
-    def __ne__(self, _): return False
-
-any_type = AlwaysEqualProxy("*")
-def ByPassTypeTuple(t): return t
-
-
-_STAGE_BRIDGE_VERSION = 1
-_STAGE_BRIDGE_TYPES = ["auto", "latent", "image", "mask", "video", "audio", "tensor", "json"]
-_STAGE_INFO_TYPE = "FLOW_STAGE_INFO"
-_STAGE_ACTIVE_RUN_IDS = {}
-_STAGE_BEGIN_NODE_IDS = {}
-_STAGE_AUTO_RUN_IDS = {}
-
-
-def _stage_safe_name(value):
-    value = str(value or "default").strip() or "default"
-    readable = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)[:48]
-    return f"{readable}_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:10]}"
-
-
-def _stage_root_dir():
-    root = os.path.abspath(os.path.join(folder_paths.get_output_directory(), ".apt_stage_bridge"))
-    os.makedirs(root, exist_ok=True)
-    return root
-
-
-def _stage_run_path(run_id):
-    root = _stage_root_dir()
-    path = os.path.abspath(os.path.join(root, _stage_safe_name(run_id)))
-    if os.path.commonpath((root, path)) != root:
-        raise ValueError("flow_stage: invalid run_id")
-    return path
-
-
-def _stage_run_dir(run_id):
-    path = _stage_run_path(run_id)
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _stage_new_run_id():
-    base = datetime.now().strftime("%y%m%d%H%M%S")
-    root = _stage_root_dir()
-    candidate = base
-    suffix = 0
-    while os.path.exists(os.path.join(root, _stage_safe_name(candidate))):
-        suffix += 1
-        candidate = f"{base}_{suffix:03d}"
-    return candidate
-
-
-def _stage_is_generated_run_id(run_id):
-    return re.fullmatch(r"\d{12}(?:_\d{3})?", str(run_id or "")) is not None
-
-
-def _stage_feedback(unique_id, widget_name, value):
-    if unique_id is None:
-        return
-    try:
-        server = PromptServer.instance
-        PromptServer.instance.send_sync(
-            "node-feedback",
-            {"node_id": unique_id, "widget_name": widget_name, "type": "value", "value": value},
-            server.client_id,
+    def decode(self, bridge_latent, vae, audio_vae, fps=24.0):
+        payloads = bridge_latent if isinstance(bridge_latent, list) else [bridge_latent]
+        vae = vae[0] if isinstance(vae, list) else vae
+        audio_vae = audio_vae[0] if isinstance(audio_vae, list) else audio_vae
+        fps = fps[0] if isinstance(fps, list) else fps
+        outputs = [_stage_dispatch_bridge_payload(payload, vae, audio_vae, fps) for payload in payloads]
+        if not outputs:
+            return tuple(ExecutionBlocker(None) for _ in range(5))
+        if len(outputs) == 1:
+            return outputs[0]
+        images, videos, audios, masks, texts = (
+            [row[index] for row in outputs if row[index] is not None and not isinstance(row[index], ExecutionBlocker)]
+            for index in range(5)
         )
-    except Exception:
-        pass
-
-
-def _stage_state_path(run_dir):
-    return os.path.join(run_dir, "state.json")
-
-
-def _stage_load_state(run_dir):
-    path = _stage_state_path(run_dir)
-    if not os.path.isfile(path):
-        return None
-    with open(path, "r", encoding="utf-8") as handle:
-        state = json.load(handle)
-    if state.get("version") != _STAGE_BRIDGE_VERSION:
-        raise ValueError("flow_stage: unsupported state version")
-    return state
-
-
-def _stage_write_json(path, value):
-    temp_path = path + ".tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(value, handle, ensure_ascii=False, indent=2)
-    os.replace(temp_path, path)
-
-
-def _stage_json_value(value):
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, (list, tuple)):
-        return [_stage_json_value(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): _stage_json_value(item) for key, item in value.items()}
-    raise TypeError(f"flow_stage: {type(value).__name__} cannot be stored as JSON")
-
-
-def _stage_cpu_tensor(value):
-    if not isinstance(value, torch.Tensor):
-        raise TypeError(f"flow_stage: expected a tensor, got {type(value).__name__}")
-    return value.detach().to(device="cpu").contiguous()
-
-
-def _stage_detect_type(data, requested):
-    if requested != "auto":
-        return requested
-    if hasattr(data, "get_components"):
-        return "video"
-    if isinstance(data, Mapping) and "samples" in data:
-        return "latent"
-    if isinstance(data, Mapping) and isinstance(data.get("latent"), Mapping) and "samples" in data["latent"]:
-        return "latent"
-    if isinstance(data, Mapping) and "waveform" in data:
-        return "audio"
-    if isinstance(data, torch.Tensor):
-        if data.ndim == 4 and data.shape[-1] in (1, 3, 4):
-            return "image"
-        if data.ndim == 3:
-            return "mask"
-        return "tensor"
-    return "json"
-
-
-def _stage_encode_payload(data, requested_type):
-    payload_type = _stage_detect_type(data, requested_type)
-    if payload_type == "latent" and isinstance(data, Mapping) and "samples" not in data:
-        data = data.get("latent")
-    elif payload_type == "image" and isinstance(data, Mapping) and isinstance(data.get("images"), torch.Tensor):
-        data = data["images"]
-    tensors = {"stage_format": torch.empty(0, dtype=torch.uint8)}
-    descriptor = {"version": _STAGE_BRIDGE_VERSION, "type": payload_type}
-
-    if payload_type == "latent":
-        if not isinstance(data, Mapping) or "samples" not in data:
-            raise TypeError("flow_stage: latent data must contain samples")
-        samples = data["samples"]
-        if isinstance(samples, comfy.nested_tensor.NestedTensor):
-            names = []
-            for index, tensor in enumerate(samples.unbind()):
-                name = f"samples_{index}"
-                tensors[name] = _stage_cpu_tensor(tensor)
-                names.append(name)
-            descriptor["samples"] = {"nested": True, "names": names}
+        video_out = _stage_merge_video_components(videos)
+        if videos and len(videos) == len(outputs):
+            components = video_out.get_components()
+            image_out = components.images
+            audio_out = components.audio if components.audio is not None else ExecutionBlocker(None)
         else:
-            tensors["samples"] = _stage_cpu_tensor(samples)
-            descriptor["samples"] = {"nested": False, "names": ["samples"]}
-
-        fields = []
-        for index, (key, value) in enumerate(data.items()):
-            if key == "samples":
-                continue
-            if isinstance(value, comfy.nested_tensor.NestedTensor):
-                names = []
-                for nested_index, tensor in enumerate(value.unbind()):
-                    name = f"field_{index}_{nested_index}"
-                    tensors[name] = _stage_cpu_tensor(tensor)
-                    names.append(name)
-                fields.append({"key": str(key), "nested_tensors": names})
-            elif isinstance(value, torch.Tensor):
-                name = f"field_{index}"
-                tensors[name] = _stage_cpu_tensor(value)
-                fields.append({"key": str(key), "tensor": name})
-            else:
-                fields.append({"key": str(key), "value": _stage_json_value(value)})
-        descriptor["fields"] = fields
-
-    elif payload_type in ("image", "mask", "tensor"):
-        tensors["data"] = _stage_cpu_tensor(data)
-
-    elif payload_type == "audio":
-        if not isinstance(data, Mapping) or "waveform" not in data:
-            raise TypeError("flow_stage: audio data must contain waveform")
-        tensors["waveform"] = _stage_cpu_tensor(data["waveform"])
-        descriptor["sample_rate"] = int(data["sample_rate"])
-
-    elif payload_type == "video":
-        if not hasattr(data, "get_components"):
-            raise TypeError("flow_stage: video data must provide get_components()")
-        components = data.get_components()
-        tensors["images"] = _stage_cpu_tensor(components.images)
-        if components.alpha is not None:
-            tensors["alpha"] = _stage_cpu_tensor(components.alpha)
-            descriptor["alpha"] = True
-        audio = components.audio
-        if audio is not None:
-            tensors["audio_waveform"] = _stage_cpu_tensor(audio["waveform"])
-            descriptor["audio_sample_rate"] = int(audio["sample_rate"])
-        frame_rate = Fraction(components.frame_rate)
-        descriptor["frame_rate"] = [frame_rate.numerator, frame_rate.denominator]
-        descriptor["bit_depth"] = int(data.get_bit_depth()) if hasattr(data, "get_bit_depth") else 8
-        if components.metadata is not None:
-            descriptor["metadata"] = _stage_json_value(components.metadata)
-
-    elif payload_type == "json":
-        descriptor["value"] = _stage_json_value(data)
-    else:
-        raise ValueError(f"flow_stage: unsupported data type {payload_type}")
-
-    return tensors, descriptor
-
-
-def _stage_decode_payload(path):
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"flow_stage: checkpoint not found: {path}")
-    tensors, metadata = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
-    if metadata is None or "stage_payload" not in metadata:
-        raise ValueError("flow_stage: checkpoint metadata is missing")
-    descriptor = json.loads(metadata["stage_payload"])
-    if descriptor.get("version") != _STAGE_BRIDGE_VERSION:
-        raise ValueError("flow_stage: unsupported checkpoint version")
-    payload_type = descriptor["type"]
-
-    if payload_type == "latent":
-        sample_info = descriptor["samples"]
-        sample_tensors = [tensors[name] for name in sample_info["names"]]
-        samples = comfy.nested_tensor.NestedTensor(sample_tensors) if sample_info["nested"] else sample_tensors[0]
-        data = {"samples": samples}
-        for field in descriptor.get("fields", []):
-            if "nested_tensors" in field:
-                data[field["key"]] = comfy.nested_tensor.NestedTensor(
-                    [tensors[name] for name in field["nested_tensors"]]
-                )
-            else:
-                data[field["key"]] = tensors[field["tensor"]] if "tensor" in field else field.get("value")
-        return data
-    if payload_type in ("image", "mask", "tensor"):
-        return tensors["data"]
-    if payload_type == "audio":
-        return {"waveform": tensors["waveform"], "sample_rate": int(descriptor["sample_rate"])}
-    if payload_type == "video":
-        audio = None
-        if "audio_waveform" in tensors:
-            audio = {
-                "waveform": tensors["audio_waveform"],
-                "sample_rate": int(descriptor["audio_sample_rate"]),
-            }
-        numerator, denominator = descriptor["frame_rate"]
-        components = Types.VideoComponents(
-            images=tensors["images"],
-            alpha=tensors.get("alpha"),
-            audio=audio,
-            frame_rate=Fraction(numerator, denominator),
-            metadata=descriptor.get("metadata"),
+            image_out = _stage_batch_concat_image(images)
+            audio_out = _stage_batch_concat_audio(audios)
+        return (
+            image_out, video_out, audio_out, _stage_batch_concat_mask(masks),
+            "\n".join(text for text in texts if text) if any(texts) else ExecutionBlocker(None),
         )
-        return InputImpl.VideoFromComponents(components, bit_depth=int(descriptor.get("bit_depth", 8)))
-    if payload_type == "json":
-        return descriptor.get("value")
-    raise ValueError(f"flow_stage: unsupported checkpoint type {payload_type}")
 
 
-def _stage_checkpoint_filename(stage_index, channel):
-    suffix = "1" if channel == "data1" else "2"
-    return f"stage_{int(stage_index):05d}_checkpoint_{suffix}.safetensors"
+def _bridge_decode_latent(bridge_latent, vae, audio_vae, fps=24.0):
+    """Decode a single latent for View_bridge_tentor.
+
+    Returns the same 5-tuple as View_bridge_tentor: (image, video, audio, mask, text).
+    Missing inputs become ExecutionBlocker so downstream nodes can be safely wired.
+    """
+    if not isinstance(bridge_latent, dict) or "samples" not in bridge_latent:
+        raise TypeError("View_bridge_tentor: bridge_latent must contain samples")
+
+    samples = bridge_latent["samples"]
+    streams = list(samples.unbind()) if isinstance(samples, comfy.nested_tensor.NestedTensor) else [samples]
+    video_samples = streams[0]
+    audio_samples = streams[-1] if len(streams) > 1 else None
+    is_video = isinstance(video_samples, torch.Tensor) and video_samples.ndim == 5
+    fps = float(fps)
+    trim_frames = max(0, int(bridge_latent.get("apt_h3_trim_frames", 0) or 0))
+    export_frames = max(0, int(bridge_latent.get("apt_h3_export_frames", 0) or 0))
+
+    images = None
+    if vae != "None":
+        video_vae = VAELoader().load_vae(vae)[0]
+        images = VAEDecode().decode(video_vae, {"samples": video_samples})[0]
+        if is_video:
+            end = trim_frames + export_frames if export_frames > 0 else int(images.shape[0])
+            images = images[trim_frames:min(end, int(images.shape[0]))]
+
+    audio = None
+    if audio_vae != "None" and audio_samples is not None:
+        audio_model = VAELoader().load_vae(audio_vae)[0]
+        audio = vae_decode_audio(audio_model, {"samples": audio_samples})
+        aligned_frames = int(images.shape[0]) if images is not None and is_video else export_frames
+        audio = _bridge_align_audio(audio, trim_frames, aligned_frames, fps)
+
+    video = None
+    if images is not None and is_video:
+        video = InputImpl.VideoFromComponents(
+            Types.VideoComponents(images=images, audio=audio, frame_rate=Fraction(str(fps))),
+            bit_depth=8,
+        )
+
+    return (
+        images if images is not None else ExecutionBlocker(None),
+        video if video is not None else ExecutionBlocker(None),
+        audio if audio is not None else ExecutionBlocker(None),
+        _bridge_mask(bridge_latent),
+        _bridge_text(bridge_latent),
+    )
 
 
-def _stage_load_checkpoint(run_dir, stage_index, channel):
-    path = os.path.join(run_dir, _stage_checkpoint_filename(stage_index, channel))
-    return _stage_decode_payload(path) if os.path.isfile(path) else None
+# ---------- 按 ID 读取桥张量，统一交给 View_bridge_tentor 解码 ----------
+
+def _stage_persistent_payload_filename(stage_index, channel):
+    """Persistent file written by flow_stage_end once a stage commits."""
+    if channel not in ("data1", "data2"):
+        raise ValueError("flow_stage_bridge_decode_range: channel must be data1 or data2")
+    suffix = "_2" if channel == "data2" else ""
+    return f"stage_{int(stage_index):05d}{suffix}.safetensors"
 
 
-class flow_stage_begin:
+def _stage_bridge_file(run_dir, stage_index, channel):
+    """Return the path to a stage's bridge payload.
+
+    Prefers the persistent payload written at stage commit; falls back to the
+    in-progress checkpoint (created mid-stage and useful after an interrupt).
+    Returns None if neither exists.
+    """
+    payload_path = os.path.join(run_dir, _stage_persistent_payload_filename(stage_index, channel))
+    if os.path.isfile(payload_path):
+        return payload_path
+    checkpoint_path = os.path.join(run_dir, _stage_checkpoint_filename(stage_index, channel))
+    if os.path.isfile(checkpoint_path):
+        return checkpoint_path
+    return None
+
+
+def _stage_dispatch_bridge_payload(payload, vae, audio_vae, fps):
+    """Dispatch a decoded payload (from _stage_decode_payload) into the 5-tuple shape.
+
+    - LATENT dict  -> _bridge_decode_latent
+    - VIDEO object -> IMAGE + VIDEO + optional AUDIO passthrough
+    - AUDIO dict   -> AUDIO passthrough
+    - IMAGE/MASK tensors -> IMAGE/MASK passthrough
+    - STRING       -> text passthrough
+    - other        -> 5x ExecutionBlocker
+    """
+    if isinstance(payload, dict) and "samples" in payload:
+        return _bridge_decode_latent(payload, vae, audio_vae, fps)
+    if hasattr(payload, "get_components"):
+        comps = payload.get_components()
+        return (
+            comps.images, payload,
+            comps.audio if comps.audio is not None else ExecutionBlocker(None),
+            ExecutionBlocker(None), ExecutionBlocker(None),
+        )
+    if isinstance(payload, dict) and "waveform" in payload and "sample_rate" in payload:
+        return (
+            ExecutionBlocker(None),
+            ExecutionBlocker(None),
+            payload,
+            ExecutionBlocker(None),
+            "",
+        )
+    if isinstance(payload, torch.Tensor):
+        if payload.ndim == 4 and payload.shape[-1] in (1, 3, 4):
+            return (payload, ExecutionBlocker(None), ExecutionBlocker(None), ExecutionBlocker(None), "")
+        if payload.ndim in (2, 3):
+            return (ExecutionBlocker(None), ExecutionBlocker(None), ExecutionBlocker(None), payload, "")
+    if isinstance(payload, str):
+        return (ExecutionBlocker(None), ExecutionBlocker(None), ExecutionBlocker(None), ExecutionBlocker(None), payload)
+    return tuple(ExecutionBlocker(None) for _ in range(5))
+
+
+class flow_stage_bridge_decode_range:
+    """Read one stage or an inclusive ID range without VAE decoding."""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "run_id": ("STRING", {"default": "default"}),
-                "total": ("INT", {"default": 3, "min": 1, "max": 5000}),
-                "stage_index": ("INT", {
+                "start_id": ("INT", {
                     "default": 1,
                     "min": 1,
                     "max": 5000,
-                    "tooltip": "当前阶段（1～总阶段数）；可手动选择断点阶段，完成后自动回到1",
+                    "step": 1,
+                    "tooltip": "1-based, inclusive.",
+                }),
+                "end_id": ("INT", {
+                    "default": 1,
+                    "min": 1,
+                    "max": 5000,
+                    "step": 1,
+                    "tooltip": "1-based, inclusive. Use the same start/end ID for one stage. Missing stages are skipped.",
                 }),
             },
-            "optional": {
-                "initial_data_1": (any_type,),
-                "initial_data_2": (any_type,),
-            },
-            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = (_STAGE_INFO_TYPE, "INT")
-    RETURN_NAMES = ("stage_info", "stage_index")
-    FUNCTION = "begin"
+    RETURN_TYPES = ("LATENT", "LATENT")
+    RETURN_NAMES = ("bridge_latent_data1", "bridge_latent_data2")
+    OUTPUT_IS_LIST = (True, True)
+    FUNCTION = "decode_range"
     CATEGORY = "Apt_Preset/flow"
+    DESCRIPTION = "Read both data1 and data2 for an inclusive stage ID range. Connect either output to View_bridge_tentor to decode and merge."
 
     @classmethod
-    def IS_CHANGED(cls, run_id, total, stage_index=1, unique_id=None, **kwargs):
-        node_key = str(unique_id or "")
-        effective_run_id = str(run_id or "").strip()
-        single_stage = int(total) == 1 and int(stage_index) == 1
-        if single_stage:
-            effective_run_id = effective_run_id or "default"
-        if (not effective_run_id or effective_run_id == "default") and node_key and not single_stage:
-            effective_run_id = str(_STAGE_ACTIVE_RUN_IDS.get(node_key) or "")
-
-        files = []
-        if effective_run_id and not single_stage:
-            run_dir = _stage_run_path(effective_run_id)
-            state_path = _stage_state_path(run_dir)
-            if os.path.isfile(state_path):
-                state_stat = os.stat(state_path)
-                files.append((os.path.basename(state_path), state_stat.st_mtime_ns, state_stat.st_size))
-                state = _stage_load_state(run_dir)
-                if state is not None:
-                    requested_stage = int(stage_index) - 1
-                    if requested_stage > 0:
-                        for suffix in ("", "_2"):
-                            payload_path = os.path.join(run_dir, f"stage_{requested_stage - 1:05d}{suffix}.safetensors")
-                            if os.path.isfile(payload_path):
-                                payload_stat = os.stat(payload_path)
-                                files.append((os.path.basename(payload_path), payload_stat.st_mtime_ns, payload_stat.st_size))
-            requested_stage = int(stage_index) - 1
+    def IS_CHANGED(cls, run_id, start_id, end_id):
+        rid = str(run_id or "").strip()
+        if not rid:
+            return ""
+        run_dir = _stage_run_dir(rid)
+        if not os.path.isdir(run_dir):
+            return f"{rid}|missing"
+        lo, hi = int(start_id), int(end_id)
+        if hi < lo:
+            lo, hi = hi, lo
+        digests = []
+        for sid in range(lo, hi + 1):
             for channel in ("data1", "data2"):
-                checkpoint_path = os.path.join(run_dir, _stage_checkpoint_filename(requested_stage, channel))
-                if os.path.isfile(checkpoint_path):
-                    checkpoint_stat = os.stat(checkpoint_path)
-                    files.append((os.path.basename(checkpoint_path), checkpoint_stat.st_mtime_ns, checkpoint_stat.st_size))
-
-        return json.dumps(
-            [effective_run_id, int(total), int(stage_index), files],
-            separators=(",", ":"),
-        )
-
-    def begin(self, run_id, total, stage_index=1,
-              initial_data_1=None, initial_data_2=None, unique_id=None):
-        total = int(total)
-        requested_index = int(stage_index)
-        if requested_index < 1 or requested_index > total:
-            raise ValueError(f"flow_stage_begin: stage_index must be between 1 and {total}")
-
-        node_key = str(unique_id or "")
-        effective_run_id = str(run_id or "").strip()
-        single_stage = total == 1 and requested_index == 1
-        if single_stage:
-            effective_run_id = effective_run_id or "default"
-        if (not effective_run_id or effective_run_id == "default") and node_key and not single_stage:
-            effective_run_id = str(_STAGE_ACTIVE_RUN_IDS.get(node_key) or "")
-
-        state = None
-        run_dir = None
-        if effective_run_id:
-            run_dir = _stage_run_dir(effective_run_id)
-            state = _stage_load_state(run_dir)
-        auto_run_id = bool(
-            (node_key and _STAGE_AUTO_RUN_IDS.get(node_key) == effective_run_id)
-            or (state is not None and state.get("auto_run_id", False))
-            or (state is not None and _stage_is_generated_run_id(effective_run_id))
-        )
-
-        stage_index = requested_index - 1
-        expanding_total = False
-        if stage_index == 0:
-            has_checkpoint = bool(
-                run_dir is not None
-                and any(
-                    os.path.isfile(os.path.join(run_dir, _stage_checkpoint_filename(0, channel)))
-                    for channel in ("data1", "data2")
-                )
-            )
-            if not has_checkpoint and not single_stage and (not effective_run_id or effective_run_id == "default" or auto_run_id):
-                effective_run_id = _stage_new_run_id()
-                run_dir = _stage_run_dir(effective_run_id)
-                state = None
-                auto_run_id = True
-            data_1 = initial_data_1
-            data_2 = initial_data_2
-        else:
-            if not effective_run_id or state is None:
-                raise ValueError(
-                    "flow_stage_begin: cannot resume from this stage because the previous run checkpoint is missing"
-                )
-            saved_total = int(state["total"])
-            if total < saved_total:
-                raise ValueError("flow_stage_begin: total cannot be smaller than the saved run")
-            expanding_total = total > saved_total
-            if expanding_total and stage_index != int(state["next_stage"]):
-                raise ValueError(
-                    f"flow_stage_begin: expanding total must continue from stage {int(state['next_stage']) + 1}"
-                )
-            if not state.get("complete", False) and int(state["next_stage"]) == stage_index:
-                filename = state.get("payload")
-            else:
-                filename = f"stage_{stage_index - 1:05d}.safetensors"
-            if filename is None:
-                if not state.get("control_only_1", state.get("control_only", False)):
-                    raise ValueError("flow_stage_begin: previous stage checkpoint is missing")
-                data_1 = None
-            else:
-                if not filename or os.path.basename(filename) != filename:
-                    raise ValueError("flow_stage_begin: invalid checkpoint filename")
-                payload_path = os.path.join(run_dir, filename)
-                if os.path.isfile(payload_path):
-                    data_1 = _stage_decode_payload(payload_path)
-                elif state.get("control_only_1", state.get("control_only", False)):
-                    filename = None
-                    data_1 = None
+                file_path = _stage_bridge_file(run_dir, sid - 1, channel)
+                if file_path is None or not os.path.isfile(file_path):
+                    digests.append(f"{sid}:{channel}:missing")
                 else:
-                    raise FileNotFoundError(f"flow_stage_begin: checkpoint not found: {payload_path}")
-            if not state.get("complete", False) and int(state["next_stage"]) == stage_index:
-                filename_2 = state.get("payload_2")
-            else:
-                filename_2 = f"stage_{stage_index - 1:05d}_2.safetensors"
-            if filename_2 is None:
-                data_2 = None
-            else:
-                if not filename_2 or os.path.basename(filename_2) != filename_2:
-                    raise ValueError("flow_stage_begin: invalid bridge 2 checkpoint filename")
-                payload_path_2 = os.path.join(run_dir, filename_2)
-                data_2 = _stage_decode_payload(payload_path_2) if os.path.isfile(payload_path_2) else None
-            if expanding_total or state.get("complete", False) or int(state["next_stage"]) != stage_index:
-                state = {
-                    "version": _STAGE_BRIDGE_VERSION,
-                    "run_id": effective_run_id,
-                    "auto_run_id": auto_run_id,
-                    "total": total,
-                    "completed_stage": stage_index - 1,
-                    "next_stage": stage_index,
-                    "payload": filename,
-                    "payload_2": filename_2,
-                    "payload_type": "auto" if filename is not None else None,
-                    "control_only": filename is None and filename_2 is None,
-                    "control_only_1": filename is None,
-                    "control_only_2": filename_2 is None,
-                    "complete": False,
-                    "restart_pending": True,
-                }
-                _stage_write_json(_stage_state_path(run_dir), state)
+                    st = os.stat(file_path)
+                    digests.append(f"{sid}:{channel}:{os.path.basename(file_path)}:{st.st_mtime_ns}:{st.st_size}")
+        return f"{rid}|" + ",".join(digests)
 
-        checkpoint_data_1 = _stage_load_checkpoint(run_dir, stage_index, "data1")
-        checkpoint_data_2 = _stage_load_checkpoint(run_dir, stage_index, "data2")
+    def decode_range(self, run_id, start_id, end_id):
+        lo, hi = int(start_id), int(end_id)
+        if hi < lo:
+            lo, hi = hi, lo
+        run_dir = _stage_run_dir(run_id)
+        payloads = ([], [])
+        if not os.path.isdir(run_dir):
+            return payloads
+        for sid in range(lo, hi + 1):
+            for channel, output in zip(("data1", "data2"), payloads):
+                path = _stage_bridge_file(run_dir, sid - 1, channel)
+                if path is not None:
+                    output.append(_stage_decode_payload(path))
+        return payloads
 
-        if node_key:
-            _STAGE_ACTIVE_RUN_IDS[node_key] = effective_run_id
-            _STAGE_BEGIN_NODE_IDS[effective_run_id] = node_key
-            if auto_run_id:
-                _STAGE_AUTO_RUN_IDS[node_key] = effective_run_id
-            else:
-                _STAGE_AUTO_RUN_IDS.pop(node_key, None)
-        _stage_feedback(unique_id, "run_id", effective_run_id)
-        _stage_feedback(unique_id, "stage_index", stage_index + 1)
 
-        stage_info = {
-            "version": _STAGE_BRIDGE_VERSION,
-            "run_id": effective_run_id,
-            "auto_run_id": auto_run_id,
-            "stage_index": stage_index,
-            "total": total,
-            "is_first": stage_index == 0,
-            "is_last": stage_index == total - 1,
-            "stage_data": data_1,
-            "stage_data_1": data_1,
-            "stage_data_2": data_2,
-            "checkpoint_data_1": checkpoint_data_1,
-            "checkpoint_data_2": checkpoint_data_2,
+# ---------- 合并桥张量解码后的视频 ----------
+
+def _stage_merge_video_components(videos):
+    """Concatenate a list of VideoFromComponents into a single video.
+
+    Match the first video's resolution, frame rate and bit depth. Use the first
+    available audio format and fill silent stages to keep audio on the timeline.
+    """
+    if not videos:
+        return ExecutionBlocker(None)
+    if len(videos) == 1:
+        return videos[0]
+    ref = videos[0]
+    components = [video.get_components() for video in videos]
+    ref_comps = components[0]
+    ref_h, ref_w = int(ref_comps.images.shape[1]), int(ref_comps.images.shape[2])
+    frame_rate = ref_comps.frame_rate
+    bit_depth = ref.get_bit_depth() if hasattr(ref, "get_bit_depth") else 8
+    ref_audio = next((comps.audio for comps in components if comps.audio is not None), None)
+    ref_sr = int(ref_audio["sample_rate"]) if ref_audio is not None else 0
+    ref_ch = int(ref_audio["waveform"].shape[1]) if ref_audio is not None else 0
+
+    all_images = []
+    all_audios = []
+    total_frames = 0
+    audio_end = 0
+    for comps in components:
+        imgs = comps.images
+        if comps.frame_rate != frame_rate:
+            frame_count = max(1, round(int(imgs.shape[0]) * float(frame_rate) / float(comps.frame_rate)))
+            indices = (torch.arange(frame_count, device=imgs.device) * float(comps.frame_rate) / float(frame_rate)).long()
+            imgs = imgs[indices.clamp(max=int(imgs.shape[0]) - 1)]
+        if imgs.shape[1:3] != (ref_h, ref_w):
+            imgs = comfy.utils.common_upscale(
+                imgs.movedim(-1, 1), ref_w, ref_h, "bilinear", "center"
+            ).movedim(1, -1)
+        all_images.append(imgs)
+        total_frames += int(imgs.shape[0])
+        if ref_sr > 0:
+            next_audio_end = round(total_frames * ref_sr / frame_rate)
+            normalized = _stage_video_normalize_audio(
+                comps.audio, ref_sr, ref_ch, next_audio_end - audio_end
+            )
+            all_audios.append(normalized)
+            audio_end = next_audio_end
+
+    merged_images = torch.cat(all_images, dim=0)
+    merged_audio = None
+    if all_audios:
+        merged_audio = {
+            "waveform": torch.cat([a["waveform"] for a in all_audios], dim=2),
+            "sample_rate": ref_sr,
         }
-        return stage_info, stage_index + 1
+
+    return InputImpl.VideoFromComponents(
+        Types.VideoComponents(images=merged_images, audio=merged_audio, frame_rate=frame_rate),
+        bit_depth=bit_depth,
+    )
 
 
-def _stage_validate_info(stage_info):
-    if not isinstance(stage_info, Mapping):
-        raise TypeError("flow_stage: stage_info must come from flow_stage_begin")
-    if int(stage_info.get("version", -1)) != _STAGE_BRIDGE_VERSION:
-        raise ValueError("flow_stage: unsupported stage_info version")
-    run_id = str(stage_info.get("run_id") or "").strip()
-    stage_index = int(stage_info.get("stage_index", -1))
-    total = int(stage_info.get("total", 0))
-    if not run_id or total < 1 or stage_index < 0 or stage_index >= total:
-        raise ValueError("flow_stage: invalid stage_info")
-    return run_id, stage_index, total
+class view_GetLength:
+    def __init__(self):
+        pass
 
-
-class flow_stage_unpack:
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
-                "stage_info": (_STAGE_INFO_TYPE,),
+                "ANY" : (ANY_TYPE, {}), 
             },
         }
+    
+    TITLE = "Get Length"
+    RETURN_TYPES = ("INT", )
+    RETURN_NAMES = ("length", )
+    FUNCTION = "run"
+    CATEGORY = "Apt_Preset/PreView"
+    OUTPUT_NODE = True
+    NAME = "view_GetLength"
 
-    RETURN_TYPES = (any_type, any_type, "INT", "INT", "BOOLEAN", "BOOLEAN")
-    RETURN_NAMES = ("data_1", "data_2", "total", "stage_index", "is_first", "is_last")
-    FUNCTION = "unpack"
-    CATEGORY = "Apt_Preset/flow"
+    def run(self, ANY):
+        length = len(ANY)
+        return comfy_api_io.NodeOutput(length, ui={"text": [f"{length}"]})
+
+
+
+
+class view_GetShape:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "tensor" : ("IMAGE,LATENT,MASK", {}), 
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT", 
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
+        }
+    
+    NAME = "view_GetShape"
+    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT")
+    RETURN_NAMES = ("width", "height", "batch_size", "long", "short")
+    FUNCTION = "run"
+    CATEGORY = "Apt_Preset/PreView"
+    OUTPUT_NODE = True
 
     @classmethod
     def VALIDATE_INPUTS(cls, input_types):
         return True
 
-    def unpack(self, stage_info):
-        _, stage_index, total = _stage_validate_info(stage_info)
-        data_1 = stage_info.get("stage_data_1", stage_info.get("stage_data"))
-        data_2 = stage_info.get("stage_data_2")
-        return (
-            data_1 if data_1 is not None else ExecutionBlocker(None),
-            data_2 if data_2 is not None else ExecutionBlocker(None),
-            total,
-            stage_index + 1,
-            stage_index == 0,
-            stage_index == total - 1,
-        )
-
-
-def _stage_save_checkpoint_data(stage_info, data, bridge):
-    run_id, stage_index, _total = _stage_validate_info(stage_info)
-    if bridge not in ("data1", "data2"):
-        raise ValueError(f"flow_stage_end: invalid bridge: {bridge}")
-
-    tensors, descriptor = _stage_encode_payload(data, "auto")
-    run_dir = _stage_run_dir(run_id)
-    filename = _stage_checkpoint_filename(stage_index, bridge)
-    path = os.path.join(run_dir, filename)
-    temp_path = path + ".tmp"
-    try:
-        comfy.utils.save_torch_file(
-            tensors,
-            temp_path,
-            metadata={"stage_payload": json.dumps(descriptor, ensure_ascii=False)},
-        )
-        os.replace(temp_path, path)
-    finally:
-        if os.path.isfile(temp_path):
-            os.remove(temp_path)
-def _stage_list_collect(run_dir, total, suffix=""):
-    items = []
-    for i in range(total):
-        path = os.path.join(run_dir, f"stage_{i:05d}{suffix}.safetensors")
-        if os.path.isfile(path):
-            items.append(_stage_decode_payload(path))
-    return items
-
-
-class flow_stage_end:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "stage_info": (_STAGE_INFO_TYPE,),
-                "unload_models": ("BOOLEAN", {"default": False}),
-                "free_memory": ("BOOLEAN", {"default": True}),
-                "free_memory_interval": ("INT", {"default": 1, "min": 1, "max": 4096, "step": 1}),
-            },
-            "optional": {
-                "data_1": (any_type, {"lazy": True}),
-                "data_2": (any_type, {"lazy": True}),
-            },
-        }
-
-    RETURN_TYPES = (any_type, any_type)
-    RETURN_NAMES = ("list_data1", "list_data2")
-    OUTPUT_IS_LIST = (True, True)
-    FUNCTION = "commit"
-    CATEGORY = "Apt_Preset/flow"
-    OUTPUT_NODE = True
-
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
-    def check_lazy_status(self, stage_info, **kwargs):
-        if "data_1" in kwargs and kwargs["data_1"] is None:
-            return ["data_1"]
-        if "data_2" in kwargs and kwargs["data_2"] is None:
-            if "data_1" in kwargs:
-                _stage_save_checkpoint_data(stage_info, kwargs["data_1"], "data1")
-            return ["data_2"]
-        return []
-
-    def commit(self, data_1=None, data_2=None, stage_info=None, unload_models=False, free_memory=True, free_memory_interval=1):
-        run_id, stage_index, total = _stage_validate_info(stage_info)
-
-        channel_1 = data_1.get("apt_h3_bridge_channel") if isinstance(data_1, Mapping) else None
-        channel_2 = data_2.get("apt_h3_bridge_channel") if isinstance(data_2, Mapping) else None
-        if channel_2 == "data2" and channel_1 != "data1":
-            raise ValueError(
-                "flow_stage_end: H3 data_1 is missing or invalid; connect "
-                "the first-pass generate context to Data_basic.context, then connect "
-                "Data_basic.latent to flow_stage_end.data_1"
-            )
-
-        run_dir = _stage_run_dir(run_id)
-        state = _stage_load_state(run_dir)
-        if stage_index == 0:
-            restart_pending = bool(
-                state is not None
-                and state.get("restart_pending", False)
-                and int(state.get("next_stage", -1)) == 0
-            )
-            if state is not None and not state.get("complete", False) and not restart_pending:
-                raise ValueError("flow_stage_end: an active run already exists for this run_id")
-        else:
-            if state is None or state.get("complete", False):
-                raise ValueError("flow_stage_end: previous stage state is missing")
-            if int(state["total"]) != total or int(state["next_stage"]) != stage_index:
-                raise ValueError("flow_stage_end: stage order does not match the saved state")
-
-        def write_bridge(data, suffix):
-            if data is None:
-                return None, None, None
-            tensors, descriptor = _stage_encode_payload(data, "auto")
-            filename = f"stage_{stage_index:05d}{suffix}.safetensors"
-            temp_path = os.path.join(run_dir, filename + ".tmp")
-            try:
-                comfy.utils.save_torch_file(
-                    tensors,
-                    temp_path,
-                    metadata={"stage_payload": json.dumps(descriptor, ensure_ascii=False)},
-                )
-            except Exception:
-                if os.path.isfile(temp_path):
-                    os.remove(temp_path)
-                raise
-            return filename, descriptor["type"], temp_path
-
-        temp_path_1 = None
-        temp_path_2 = None
-        try:
-            filename, payload_type, temp_path_1 = write_bridge(data_1, "")
-            filename_2, payload_type_2, temp_path_2 = write_bridge(data_2, "_2")
-            if temp_path_1 is not None:
-                os.replace(temp_path_1, os.path.join(run_dir, filename))
-            if temp_path_2 is not None:
-                os.replace(temp_path_2, os.path.join(run_dir, filename_2))
-        finally:
-            for temp_path in (temp_path_1, temp_path_2):
-                if temp_path is not None and os.path.isfile(temp_path):
-                    os.remove(temp_path)
-
-        complete = stage_index == total - 1
-        next_state = {
-            "version": _STAGE_BRIDGE_VERSION,
-            "run_id": str(run_id),
-            "auto_run_id": bool(stage_info.get("auto_run_id", False)),
-            "total": total,
-            "completed_stage": stage_index,
-            "next_stage": stage_index + 1,
-            "payload": filename,
-            "payload_2": filename_2,
-            "payload_type": payload_type,
-            "payload_type_2": payload_type_2,
-            "control_only": data_1 is None and data_2 is None,
-            "control_only_1": data_1 is None,
-            "control_only_2": data_2 is None,
-            "complete": complete,
-        }
-        _stage_write_json(_stage_state_path(run_dir), next_state)
-        for channel in ("data1", "data2"):
-            checkpoint_path = os.path.join(run_dir, _stage_checkpoint_filename(stage_index, channel))
-            if os.path.isfile(checkpoint_path):
-                os.remove(checkpoint_path)
-
-        begin_node_id = _STAGE_BEGIN_NODE_IDS.get(run_id)
-        _stage_feedback(begin_node_id, "stage_index", 1 if complete else stage_index + 2)
-        if complete:
-            _STAGE_BEGIN_NODE_IDS.pop(run_id, None)
-
-        PromptServer.instance.prompt_queue.set_flag("unload_models", bool(unload_models))
-        should_free_memory = free_memory and (stage_index + 1) % free_memory_interval == 0
-        PromptServer.instance.prompt_queue.set_flag("free_memory", should_free_memory)
-
-        list_data1 = ExecutionBlocker(None)
-        list_data2 = ExecutionBlocker(None)
-        if complete:
-            list_data1 = _stage_list_collect(run_dir, total)
-            list_data2 = _stage_list_collect(run_dir, total, "_2")
-
-        if not complete:
-            server = PromptServer.instance
-            server.send_sync("add-queue", {}, server.client_id)
-
-        if filename is None and filename_2 is None:
-            message = f"stage {stage_index + 1}/{total} completed (control only)"
-        else:
-            saved = ", ".join(name for name in (filename, filename_2) if name is not None)
-            message = f"stage {stage_index + 1}/{total} saved: {saved}"
-        return {"ui": {"text": [message]}, "result": (list_data1, list_data2)}
-
-
-def _stage_color_number(value, name, minimum, maximum, integer=False):
-    number = float(value)
-    if not math.isfinite(number) or not minimum <= number <= maximum or (integer and not number.is_integer()):
-        raise ValueError(f"AD_Video_color_grad: {name} must be between {minimum} and {maximum}")
-    return int(number) if integer else number
-
-
-def _stage_color_profile(frame, detailed=False):
-    stride = max(1, min(frame.shape[:2]) // 128)
-    pixels = frame[::stride, ::stride, :3].float().reshape(-1, 3)
-    quantiles = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99] if detailed else [0.05, 0.25, 0.5, 0.75, 0.95]
-    return torch.quantile(pixels, pixels.new_tensor(quantiles), dim=0)
-
-
-def _stage_color_match(rgb, target, detailed=False):
-    source = _stage_color_profile(rgb, detailed=detailed)
-    output = rgb.clone()
-    for channel in range(3):
-        if float(source[-1, channel] - source[0, channel]) < 1e-4:
-            continue
-        x = torch.cat((source.new_zeros(1), source[:, channel], source.new_ones(1))).contiguous()
-        y = torch.cat((target.new_zeros(1), target[:, channel], target.new_ones(1)))
-        pixels = rgb[..., channel].contiguous()
-        indices = (torch.searchsorted(x, pixels, right=True) - 1).clamp(0, len(x) - 2)
-        t = (pixels - x[indices]) / (x[indices + 1] - x[indices]).clamp_min(1e-6)
-        mapped = y[indices] + (y[indices + 1] - y[indices]) * t
-        output[..., channel] = pixels + (mapped - pixels).clamp(-0.2, 0.2)
-    return output
-
-
-def _stage_color_log_brightness(frame):
-    stride = max(1, min(frame.shape[:2]) // 96)
-    rgb = frame[::stride, ::stride, :3].float().clamp(0, 1)
-    linear = torch.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055).pow(2.4))
-    luminance = (linear * linear.new_tensor([0.2126, 0.7152, 0.0722])).sum(dim=-1)
-    levels = torch.quantile(luminance.flatten(), luminance.new_tensor([0.25, 0.5, 0.75]))
-    return float(levels.clamp_min(1e-5).log2().mean())
-
-
-def _stage_color_smooth_targets(levels, start, end):
-    """Interpolate tone statistics between nearby unselected frames."""
-    if start == 1 and end == len(levels):
-        raise ValueError("AD_Video_color_grad: leave normal frames outside the selection for brightness smoothing")
-    left = levels[max(0, start - 4):start - 1]
-    right = levels[end:end + 3]
-    anchors = []
-    if left:
-        anchors.append((start - (len(left) + 1) / 2, np.median(left, axis=0)))
-    if right:
-        anchors.append((end + (len(right) + 1) / 2, np.median(right, axis=0)))
-    targets = []
-    for frame in range(start, end + 1):
-        target = anchors[0][1]
-        if len(anchors) == 2:
-            (x0, y0), (x1, y1) = anchors
-            target = target + (y1 - y0) * (frame - x0) / (x1 - x0)
-        targets.append(target.tolist())
-    return targets
-
-
-def _stage_color_luma_profile(rgb):
-    stride = max(1, min(rgb.shape[:2]) // 128)
-    pixels = rgb[::stride, ::stride, :3].float()
-    luminance = pixels[..., 0] * 0.2126 + pixels[..., 1] * 0.7152 + pixels[..., 2] * 0.0722
-    return torch.quantile(luminance.flatten(), luminance.new_tensor([0.05, 0.25, 0.5, 0.75, 0.95]))
-
-
-def _stage_color_smooth_tone(rgb, target):
-    source = _stage_color_luma_profile(rgb)
-    target = source.new_tensor(target)
-    if float(source[-1] - source[0]) < 1e-4 or float((source - target).abs().max()) < 0.005:
-        return rgb
-    luminance = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
-    white = luminance.amax().clamp_min(1.0).reshape(1)
-    source = torch.cat((source.new_zeros(1), source, white))
-    target = torch.cat((target.new_zeros(1), target, target.new_ones(1)))
-    indices = (torch.searchsorted(source, luminance.contiguous(), right=True) - 1).clamp(0, len(source) - 2)
-    t = (luminance - source[indices]) / (source[indices + 1] - source[indices]).clamp_min(1e-6)
-    mapped = target[indices] + (target[indices + 1] - target[indices]) * t
-    return rgb + (mapped - luminance).clamp(-0.15, 0.15).unsqueeze(-1)
-
-
-def _stage_color_adjust(rgb, exposure, saturation, temperature):
-    if exposure or temperature:
-        linear = torch.where(rgb <= 0.04045, rgb / 12.92, ((rgb.clamp_min(0.0) + 0.055) / 1.055).pow(2.4))
-        gains = rgb.new_tensor([2.0 ** (exposure + temperature * 0.2), 2.0 ** exposure,
-                                2.0 ** (exposure - temperature * 0.2)])
-        linear = linear * gains
-        rgb = torch.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear.clamp_min(0.0).pow(1.0 / 2.4) - 0.055)
-    if saturation != 1.0:
-        luminance = rgb[..., 0:1] * 0.2126 + rgb[..., 1:2] * 0.7152 + rgb[..., 2:3] * 0.0722
-        rgb = luminance + (rgb - luminance) * saturation
-    return rgb
-
-
-def _stage_color_render_frame(rgb, mode, strength, exposure, saturation, temperature,
-                              frame, start, end, count, fps, correction=None, tone=None, profile=None, color_tone=None):
-    if not start <= frame <= end or not strength:
-        return rgb
-    fade = min(max(1, round(float(fps) * 0.2)), max(0, (end - start - 1) // 2))
-    t = min(1.0, (frame - start + 1) / (fade + 1) if start > 1 else 1.0,
-            (end - frame + 1) / (fade + 1) if end < count else 1.0)
-    weight = min(strength, 1.0) * t * t * (3.0 - 2.0 * t)
-    if mode == "brightness_smooth":
-        adjusted = _stage_color_adjust(rgb, correction, 1.0, 0.0)
-        adjusted = _stage_color_smooth_tone(adjusted, tone)
-        if strength > 1.0:
-            adjusted = adjusted.clamp(0.0, 1.0)
-            matched = _stage_color_match(adjusted, rgb.new_tensor(color_tone), detailed=True)
-            matched = _stage_color_smooth_tone(matched, tone)
-            adjusted = adjusted + (matched - adjusted) * ((strength - 1.0) / 2.0)
-    else:
-        adjusted = _stage_color_match(rgb, profile) if profile is not None else rgb
-        adjusted = _stage_color_adjust(adjusted, exposure, saturation, temperature)
-    return (rgb + (adjusted - rgb) * weight).clamp(0.0, 1.0)
-
-
-def _stage_color_preview(images, frame_rate, source=False):
-    height, width = images.shape[1:3]
-    scale = min(1.0, 640 / max(height, width))
-    size = (max(2, round(height * scale / 2) * 2), max(2, round(width * scale / 2) * 2))
-    directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
-        "video_grade_source" if source else "video_grade", folder_paths.get_temp_directory(), width, height)
-    filename = f"{name}_{counter:05d}_.mp4"
-    path = os.path.join(directory, filename)
-    statistics = {"fps": float(frame_rate), "count": len(images), "levels": [], "tones": [], "colors": [], "detail_colors": []}
-    with av.open(path, mode="w", format="mp4", options={"movflags": "+faststart"}) as output:
-        stream = output.add_stream("libx264", rate=frame_rate)
-        stream.width, stream.height = size[1], size[0]
-        stream.pix_fmt = "yuv420p"
-        stream.options = {"crf": "22", "preset": "ultrafast", "g": str(max(1, round(float(frame_rate))))}
-        for frame in images:
-            if source:
-                statistics["levels"].append(_stage_color_log_brightness(frame))
-                statistics["tones"].append(_stage_color_luma_profile(frame).tolist())
-                colors = _stage_color_profile(frame, detailed=True).tolist()
-                statistics["colors"].append([colors[index] for index in (1, 3, 4, 5, 7)])
-                statistics["detail_colors"].append(colors)
-            small = torch.nn.functional.interpolate(frame[..., :3].movedim(-1, 0).unsqueeze(0).float(), size=size, mode="area")
-            pixels = (small[0].movedim(0, -1).clamp(0, 1) * 255).round().to(device="cpu", dtype=torch.uint8).numpy()
-            for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
-                output.mux(packet)
-        for packet in stream.encode(None):
-            output.mux(packet)
-    if source:
-        with open(path + ".json", "w", encoding="utf-8") as file:
-            json.dump(statistics, file)
-    return {"filename": filename, "subfolder": subfolder, "type": "temp"}
-
-
-def _stage_color_preview_frame(data):
-    filename = data["source"]
-    if not isinstance(filename, str) or not re.fullmatch(r"video_grade_source_[0-9]+_\.mp4", filename):
-        raise ValueError("Invalid video preview source")
-    directory = os.path.realpath(folder_paths.get_temp_directory())
-    path = os.path.join(directory, filename)
-    for candidate in (path, path + ".json"):
-        if os.path.commonpath((directory, os.path.realpath(candidate))) != directory:
-            raise ValueError("Invalid video preview source")
-    with open(path + ".json", encoding="utf-8") as file:
-        stats = json.load(file)
-    count, fps = stats["count"], stats["fps"]
-    frame = _stage_color_number(data["frame"], "frame", 1, count, True)
-    start = _stage_color_number(data["start"], "start", 1, count, True)
-    end = _stage_color_number(data["end"], "end", start, count, True)
-    reference = _stage_color_number(data["reference"], "reference", 1, count, True)
-    mode = data["mode"]
-    if mode not in ("manual", "brightness_smooth", "reference_match"):
-        raise ValueError("Invalid grading mode")
-    strength = _stage_color_number(data["strength"], "strength", 0, 3 if mode == "brightness_smooth" else 1)
-    exposure = _stage_color_number(data["exposure"], "exposure", -4, 4)
-    saturation = _stage_color_number(data["saturation"], "saturation", 0, 2)
-    temperature = _stage_color_number(data["temperature"], "temperature", -1, 1)
-    rgb = None
-    with av.open(path) as video:
-        stream = video.streams.video[0]
-        rate = stream.average_rate
-        timestamp = Fraction(frame - 1, 1) / rate
-        video.seek(int(timestamp / stream.time_base), stream=stream, backward=True)
-        for decoded in video.decode(stream):
-            index = round(decoded.pts * decoded.time_base * rate) + 1
-            if index == frame:
-                rgb = torch.from_numpy(decoded.to_ndarray(format="rgb24")).float() / 255
-                break
-            if index > frame:
-                break
-    if rgb is None:
-        raise ValueError("Preview frame is unavailable; reload the video")
-    correction, tone, profile, color_tone = None, None, None, None
-    if strength and start <= frame <= end:
-        if mode == "brightness_smooth":
-            targets = _stage_color_smooth_targets(stats["levels"], start, end)
-            correction = max(-1.0, min(1.0, targets[frame - start] - stats["levels"][frame - 1]))
-            tone = _stage_color_smooth_targets(stats["tones"], start, end)[frame - start]
-            if strength > 1.0:
-                if "detail_colors" not in stats:
-                    raise ValueError("Reload the video to enable stronger smoothing")
-                color_tone = _stage_color_smooth_targets(stats["detail_colors"], start, end)[frame - start]
-        elif mode == "reference_match":
-            profile = rgb.new_tensor(stats["colors"][reference - 1])
-    graded = _stage_color_render_frame(rgb, mode, strength, exposure, saturation, temperature,
-                                       frame, start, end, count, fps, correction, tone, profile, color_tone)
-    pixels = (graded.clamp(0, 1) * 255).round().byte().numpy()
-    buffer = io.BytesIO()
-    Image.fromarray(pixels).save(buffer, format="PNG", compress_level=1)
-    return buffer.getvalue()
-
-
-@PromptServer.instance.routes.post("/apt_preset/video_grade/frame")
-async def apt_preset_video_grade_frame(request):
-    try:
-        data = await request.json()
-        if not isinstance(data, dict):
-            raise ValueError("Invalid frame request")
-        result = await asyncio.to_thread(_stage_color_preview_frame, data)
-    except (ValueError, TypeError, KeyError) as exc:
-        return web.json_response({"error": str(exc)}, status=400)
-    except FileNotFoundError:
-        return web.json_response({"error": "Preview expired; reload the video"}, status=404)
-    return web.Response(body=result, content_type="image/png", headers={"Cache-Control": "no-store"})
-
-
-class AD_Video_color_grad:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {
-            "video": ("VIDEO",),
-            "mode": (["manual", "brightness_smooth", "reference_match"], {"default": "manual"}),
-            "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05}),
-            "exposure": ("FLOAT", {"default": 0.0, "min": -4.0, "max": 4.0, "step": 0.05}),
-            "saturation": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
-            "temperature": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
-            "selection": ("STRING", {"default": "{}"}),
-        }}
-
-    RETURN_TYPES = ("VIDEO",)
-    RETURN_NAMES = ("video",)
-    FUNCTION = "grade"
-    CATEGORY = "Apt_Preset/AD"
-    OUTPUT_NODE = True
-    DESCRIPTION = "视频调色：在轨道上拖选范围，调整亮度、色彩或自动平滑。保留完整视频和音频，不需要 latent / VAE。"
-
-    def grade(self, video, mode="manual", strength=1.0, exposure=0.0, saturation=1.0, temperature=0.0, selection="{}"):
-        if mode not in ("manual", "brightness_smooth", "reference_match"):
-            raise ValueError("AD_Video_color_grad: invalid mode")
-        strength = _stage_color_number(strength, "strength", 0, 3 if mode == "brightness_smooth" else 1)
-        exposure = _stage_color_number(exposure, "exposure", -4, 4)
-        saturation = _stage_color_number(saturation, "saturation", 0, 2)
-        temperature = _stage_color_number(temperature, "temperature", -1, 1)
-        selected = json.loads(selection)
-        if not isinstance(selected, dict) or set(selected) - {"start", "end", "reference"}:
-            raise ValueError("AD_Video_color_grad: invalid timeline selection")
-        components = video.get_components()
-        images = components.images
-        count = int(images.shape[0])
-        if count == 0:
-            raise ValueError("AD_Video_color_grad: video has no frames")
-        start = _stage_color_number(selected.get("start", 1), "start", 1, count, True)
-        end = _stage_color_number(selected.get("end", count), "end", start, count, True)
-        reference = _stage_color_number(selected.get("reference", max(1, start - 1)), "reference", 1, count, True)
-        curve, tones, profile, color_tones = None, None, None, None
-        if strength and mode == "brightness_smooth":
-            # Only the selection and its immediate neighbours contribute to the curve.
-            first, last = max(0, start - 4), min(count, end + 3)
-            levels = [_stage_color_log_brightness(frame) for frame in images[first:last]]
-            targets = _stage_color_smooth_targets(levels, start - first, end - first)
-            curve = [max(-1.0, min(1.0, target - levels[index - first]))
-                     for index, target in zip(range(start - 1, end), targets)]
-            profiles = [_stage_color_luma_profile(frame).tolist() for frame in images[first:last]]
-            tones = _stage_color_smooth_targets(profiles, start - first, end - first)
-            if strength > 1.0:
-                colors = [_stage_color_profile(frame, detailed=True).tolist() for frame in images[first:last]]
-                color_tones = _stage_color_smooth_targets(colors, start - first, end - first)
-        elif strength and mode == "reference_match":
-            profile = _stage_color_profile(images[reference - 1])
-        changed = strength and (mode != "manual" or exposure != 0 or saturation != 1 or temperature != 0)
-        output = images.clone() if changed else images
-        if changed:
-            for index in range(start - 1, end):
-                rgb = images[index, ..., :3].float()
-                graded = _stage_color_render_frame(rgb, mode, strength, exposure, saturation, temperature,
-                    index + 1, start, end, count, components.frame_rate,
-                    curve[index - start + 1] if curve is not None else None,
-                    tones[index - start + 1] if tones is not None else None, profile,
-                    color_tones[index - start + 1] if color_tones is not None else None)
-                output[index, ..., :3] = graded.to(images.dtype)
-        result = InputImpl.VideoFromComponents(
-            Types.VideoComponents(images=output, audio=components.audio, frame_rate=components.frame_rate),
-            bit_depth=video.get_bit_depth())
-        source = _stage_color_preview(images, components.frame_rate, source=True)
-        preview = _stage_color_preview(output, components.frame_rate) if changed else source
-        return {"ui": {"grade_preview": [{"video": preview, "source": source, "total_frames": count,
-                    "fps": float(components.frame_rate), "start": start, "end": end, "reference": reference}]},
-                "result": (result,)}
-
-
-def _stage_batch_dir(run_id):
-    run_dir = _stage_run_dir(run_id)
-    path = os.path.join(run_dir, "batches")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _stage_batch_save(data, batch_dir, kind, stage_index, storage_kind=None):
-    tensors, descriptor = _stage_encode_payload(data, kind)
-    filename = f"{storage_kind or kind}_{stage_index:05d}.safetensors"
-    path = os.path.join(batch_dir, filename)
-    temp_path = path + ".tmp"
-    try:
-        comfy.utils.save_torch_file(
-            tensors,
-            temp_path,
-            metadata={"stage_payload": json.dumps(descriptor, ensure_ascii=False)},
-        )
-        os.replace(temp_path, path)
-    finally:
-        if os.path.isfile(temp_path):
-            os.remove(temp_path)
-
-
-def _stage_batch_load(batch_dir, kind, stage_index):
-    path = os.path.join(batch_dir, f"{kind}_{stage_index:05d}.safetensors")
-    if not os.path.isfile(path):
-        return None
-    return _stage_decode_payload(path)
-
-
-def _stage_batch_concat_image(items):
-    if not items:
-        return ExecutionBlocker(None)
-    ref = items[0]
-    ref_h, ref_w = int(ref.shape[1]), int(ref.shape[2])
-    out = [ref]
-    for tensor in items[1:]:
-        if tensor.shape[1:] != ref.shape[1:]:
-            tensor = common_upscale(
-                tensor.movedim(-1, 1), ref_w, ref_h, "bilinear", "center"
-            ).movedim(1, -1)
-        out.append(tensor)
-    return torch.cat(out, dim=0)
-
-
-def _stage_batch_concat_mask(items):
-    if not items:
-        return ExecutionBlocker(None)
-    normalized = [tensor.unsqueeze(0) if tensor.ndim == 2 else tensor for tensor in items]
-    ref = normalized[0]
-    ref_h, ref_w = int(ref.shape[-2]), int(ref.shape[-1])
-    out = [ref]
-    for tensor in normalized[1:]:
-        if tensor.shape[-2:] != ref.shape[-2:]:
-            tensor = common_upscale(
-                tensor.unsqueeze(1), ref_w, ref_h, "bilinear", "center"
-            ).squeeze(1)
-        out.append(tensor)
-    return torch.cat(out, dim=0)
-
-
-def _stage_latent_to_list(samples):
-    if isinstance(samples, comfy.nested_tensor.NestedTensor):
-        return list(samples.unbind())
-    return [samples[index] for index in range(samples.shape[0])]
-
-
-def _stage_batch_concat_latent(items):
-    if not items:
-        return ExecutionBlocker(None)
-    merged = items[0]
-    samples_out = merged.copy()
-    s1 = merged["samples"]
-    use_nested = isinstance(s1, comfy.nested_tensor.NestedTensor)
-    for nxt in items[1:]:
-        s2 = nxt["samples"]
-        if use_nested or isinstance(s2, comfy.nested_tensor.NestedTensor):
-            use_nested = True
-            s1 = comfy.nested_tensor.NestedTensor(_stage_latent_to_list(s1) + _stage_latent_to_list(s2))
-        else:
-            if s1.shape[1:] != s2.shape[1:]:
-                s2 = common_upscale(s2, s1.shape[3], s1.shape[2], "bilinear", "center")
-            s1 = torch.cat((s1, s2), dim=0)
-    samples_out["samples"] = s1
-    return samples_out
-
-
-def _stage_batch_concat_audio(items):
-    if not items:
-        return ExecutionBlocker(None)
-    sample_rate = int(items[0]["sample_rate"])
-    waveforms = [item["waveform"] for item in items]
-    return {"waveform": torch.cat(waveforms, dim=2), "sample_rate": sample_rate}
-
-
-def _stage_video_segment_path(batch_dir, stage_index):
-    return os.path.join(batch_dir, "video_segments", f"{stage_index:05d}.mp4")
-
-
-def _stage_video_reference_path(batch_dir):
-    return os.path.join(batch_dir, "video_reference.json")
-
-
-def _stage_video_normalize_audio(audio, sample_rate, channels, length):
-    if audio is None:
-        waveform = torch.zeros((1, channels, length), dtype=torch.float32)
-    else:
-        waveform = audio["waveform"]
-        source_rate = int(audio["sample_rate"])
-        if source_rate != sample_rate:
-            resampled_length = max(1, round(waveform.shape[-1] * sample_rate / source_rate))
-            waveform = torch.nn.functional.interpolate(waveform, size=resampled_length, mode="linear", align_corners=False)
-        source_channels = int(waveform.shape[1])
-        if source_channels != channels:
-            if channels == 1:
-                waveform = waveform.mean(dim=1, keepdim=True)
-            elif source_channels == 1:
-                waveform = waveform.repeat(1, channels, 1)
-            elif source_channels > channels:
-                waveform = waveform[:, :channels]
+    def _resolve_input_type(self, unique_id, extra_pnginfo):
+        workflow = extra_pnginfo.get("workflow", {}) if isinstance(extra_pnginfo, dict) else {}
+        node_list = workflow.get("nodes", [])
+        links = workflow.get("links", [])
+
+        cur_node = next((n for n in node_list if str(n.get("id")) == str(unique_id)), None)
+        if cur_node is None:
+            return None
+
+        inputs = cur_node.get("inputs", [])
+        first_link_id = None
+        if isinstance(inputs, list):
+            for item in inputs:
+                if isinstance(item, dict) and item.get("link") is not None:
+                    first_link_id = item.get("link")
+                    break
+
+        if first_link_id is None:
+            return None
+
+        link = next((l for l in links if isinstance(l, list) and len(l) > 3 and l[0] == first_link_id), None)
+        if link is None:
+            return None
+
+        upstream_node_id, upstream_socket_id = link[1], link[2]
+        upstream_node = next((n for n in node_list if n.get("id") == upstream_node_id), None)
+        if upstream_node is None:
+            return None
+
+        outputs = upstream_node.get("outputs", [])
+        if not isinstance(outputs, list) or upstream_socket_id >= len(outputs):
+            return None
+
+        output_info = outputs[upstream_socket_id]
+        if not isinstance(output_info, dict):
+            return None
+
+        return output_info.get("type")
+
+    def run(self, tensor, unique_id, prompt, extra_pnginfo):  
+        input_type = self._resolve_input_type(unique_id, extra_pnginfo)
+        
+        B, H, W, C = 1, 1, 1, 1
+        
+        if isinstance(tensor, dict) and "samples" in tensor:
+            samples_shape = tensor["samples"].shape
+            if len(samples_shape) == 5:
+                B, C, F, H, W = samples_shape
+                B = B * F
+            elif len(samples_shape) == 4:
+                B, C, H, W = samples_shape
+            elif len(samples_shape) == 3:
+                B, H, W = samples_shape
+                C = 4
             else:
-                waveform = torch.cat((waveform, waveform[:, -1:].repeat(1, channels - source_channels, 1)), dim=1)
-        if waveform.shape[-1] < length:
-            waveform = torch.nn.functional.pad(waveform, (0, length - waveform.shape[-1]))
+                print(f"Unexpected latent shape: {samples_shape}")
+                B, C, H, W = 1, 4, 64, 64
+        elif input_type == "IMAGE":
+            if len(tensor.shape) == 5:
+                B, F, H, W, C = tensor.shape
+                B = B * F
+            else:
+                B, H, W, C = tensor.shape
+        elif input_type == "LATENT":
+            shape = tensor.shape
+            if len(shape) == 5:
+                B, C, F, H, W = shape
+                B = B * F
+            elif len(shape) == 4:
+                B, C, H, W = shape
+            elif len(shape) == 3:
+                B, H, W = shape
+                C = 4
+            else:
+                print(f"Unexpected latent shape: {shape}")
+                B, C, H, W = 1, 4, 64, 64
         else:
-            waveform = waveform[..., :length]
-    return {"waveform": waveform, "sample_rate": sample_rate}
+            shape = tensor.shape
+            if len(shape) == 2:
+                H, W = shape
+            elif len(shape) == 3:
+                B, H, W = shape
+            elif len(shape) == 4:
+                if shape[3] <= 4:
+                    B, H, W, C = tensor.shape
+                else:
+                    B, C, H, W = shape
+            elif len(shape) == 5:
+                if shape[-1] <= 4:
+                    B, F, H, W, C = shape
+                    B = B * F
+                else:
+                    B, C, F, H, W = shape
+                    B = B * F
+        
+        long_side = max(W, H)
+        short_side = min(W, H)
+
+        return comfy_api_io.NodeOutput(W, H, B, long_side, short_side, ui={"text": [f"{W}, {H}, {B}, {long_side}, {short_side}"]})
 
 
-def _stage_save_video_segment(video, batch_dir, stage_index):
-    components = video.get_components()
-    images = components.images
-    audio = components.audio
-    reference_path = _stage_video_reference_path(batch_dir)
-    if stage_index == 0:
-        audio_sample_rate = int(audio["sample_rate"]) if audio is not None else 0
-        source_audio_channels = int(audio["waveform"].shape[1]) if audio is not None else 0
-        audio_channels = source_audio_channels if source_audio_channels in (1, 2, 6) else (2 if source_audio_channels else 0)
-        frame_rate = Fraction(components.frame_rate)
-        reference = {
-            "width": int(images.shape[2]),
-            "height": int(images.shape[1]),
-            "frame_rate": [frame_rate.numerator, frame_rate.denominator],
-            "bit_depth": int(video.get_bit_depth()) if hasattr(video, "get_bit_depth") else 8,
-            "audio_sample_rate": audio_sample_rate,
-            "audio_channels": audio_channels,
-        }
-        _stage_write_json(reference_path, reference)
-    else:
-        if not os.path.isfile(reference_path):
-            raise ValueError("flow_stage: first video segment information is missing")
-        with open(reference_path, "r", encoding="utf-8") as handle:
-            reference = json.load(handle)
 
-    width = int(reference["width"])
-    height = int(reference["height"])
-    if images.shape[1:3] != (height, width):
-        images = common_upscale(images.movedim(-1, 1), width, height, "bilinear", "center").movedim(1, -1)
-    numerator, denominator = reference["frame_rate"]
-    frame_rate = Fraction(numerator, denominator)
-    normalized = Types.VideoComponents(
-        images=images,
-        audio=(
-            _stage_video_normalize_audio(
-                audio,
-                int(reference["audio_sample_rate"]),
-                int(reference["audio_channels"]),
-                max(1, math.ceil(images.shape[0] * int(reference["audio_sample_rate"]) / frame_rate)),
-            )
-            if int(reference["audio_sample_rate"]) > 0 else None
-        ),
-        frame_rate=frame_rate,
-    )
-    path = _stage_video_segment_path(batch_dir, stage_index)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temp_path = path + ".tmp.mp4"
+
+
+_VIEW_GET_WIDGETS_VALUES_MAX_OUTPUTS = 20
+_NODE_DEFS_ZH_CACHE = None
+
+
+def _load_node_defs_zh():
+    global _NODE_DEFS_ZH_CACHE
+    if _NODE_DEFS_ZH_CACHE is not None:
+        return _NODE_DEFS_ZH_CACHE
+    node_defs_path = Path(__file__).resolve().parents[1] / "locales" / "zh" / "nodeDefs.json"
     try:
-        normalized_video = InputImpl.VideoFromComponents(normalized, bit_depth=int(reference["bit_depth"]))
-        normalized_video.save_to(
-            temp_path,
-            format=Types.VideoContainer.MP4,
-            codec=Types.VideoCodec.H264,
-            crf=18.0,
-        )
-        os.replace(temp_path, path)
-    finally:
-        if os.path.isfile(temp_path):
-            os.remove(temp_path)
-    return path
+        with open(node_defs_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            _NODE_DEFS_ZH_CACHE = loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        _NODE_DEFS_ZH_CACHE = {}
+    return _NODE_DEFS_ZH_CACHE
 
 
-def _stage_concat_video_segments(paths, output_path):
-    temp_path = output_path + ".tmp.mp4"
-    try:
-        with av.open(paths[0], mode="r") as first:
-            templates = [stream for stream in first.streams if stream.type in ("video", "audio")]
-            if not templates:
-                raise ValueError("flow_stage: saved segment has no usable stream")
-            with av.open(temp_path, mode="w", format="mp4", options={"movflags": "use_metadata_tags+faststart"}) as output:
-                output_streams = [output.add_stream_from_template(stream, opaque=True) for stream in templates]
-                timeline = Fraction(0)
-                for path in paths:
-                    with av.open(path, mode="r") as source:
-                        streams = [stream for stream in source.streams if stream.type in ("video", "audio")]
-                        if len(streams) != len(templates):
-                            raise ValueError("flow_stage: segment stream layouts do not match")
-                        bases = {}
-                        segment_end = Fraction(0)
-                        for packet in source.demux(streams):
-                            if packet.dts is None and packet.pts is None:
-                                continue
-                            stream_index = streams.index(packet.stream)
-                            template = templates[stream_index]
-                            if packet.stream.type != template.type or packet.stream.codec_context.name != template.codec_context.name:
-                                raise ValueError("flow_stage: segment codecs do not match")
-                            time_base = Fraction(packet.time_base or packet.stream.time_base)
-                            timestamps = [value for value in (packet.dts, packet.pts) if value is not None]
-                            base = bases.setdefault(stream_index, min(timestamps))
-                            offset = int(timeline / time_base)
-                            if packet.dts is not None:
-                                packet.dts = packet.dts - base + offset
-                            if packet.pts is not None:
-                                packet.pts = packet.pts - base + offset
-                            packet.time_base = time_base
-                            packet.stream = output_streams[stream_index]
-                            end_value = max(value for value in (packet.dts, packet.pts) if value is not None)
-                            segment_end = max(segment_end, (end_value + int(packet.duration or 0)) * time_base - timeline)
-                            output.mux(packet)
-                        if segment_end <= 0:
-                            raise ValueError("flow_stage: saved segment is empty")
-                        timeline += segment_end
-        os.replace(temp_path, output_path)
-    finally:
-        if os.path.isfile(temp_path):
-            os.remove(temp_path)
-    return InputImpl.VideoFromFile(output_path)
+def _resolve_zh_input_name(node_type, key):
+    if not isinstance(node_type, str) or not isinstance(key, str):
+        return str(key)
+    node_defs = _load_node_defs_zh()
+    node_def = node_defs.get(node_type, {})
+    if not isinstance(node_def, dict):
+        return key
+    inputs = node_def.get("inputs", {})
+    if not isinstance(inputs, dict):
+        return key
+    input_def = inputs.get(key, {})
+    if not isinstance(input_def, dict):
+        return key
+    name = input_def.get("name")
+    if isinstance(name, str) and len(name.strip()) > 0:
+        return name
+    return key
 
 
-def _stage_collect_outputs(batch_dir, total):
-    images = [_stage_batch_load(batch_dir, "image", index) for index in range(total)]
-    masks = [_stage_batch_load(batch_dir, "mask", index) for index in range(total)]
-    latents = [_stage_batch_load(batch_dir, "latent", index) for index in range(total)]
-    audios = [_stage_batch_load(batch_dir, "audio", index) for index in range(total)]
-    video_paths = [_stage_video_segment_path(batch_dir, index) for index in range(total)]
-    video_paths = [path for path in video_paths if os.path.isfile(path)]
-    merged_video = (
-        _stage_concat_video_segments(video_paths, os.path.join(batch_dir, "merged_video.mp4"))
-        if video_paths else ExecutionBlocker(None)
-    )
-    return (
-        _stage_batch_concat_image([item for item in images if item is not None]),
-        _stage_batch_concat_mask([item for item in masks if item is not None]),
-        _stage_batch_concat_latent([item for item in latents if item is not None]),
-        merged_video,
-        _stage_batch_concat_audio([item for item in audios if item is not None]),
-    )
+class view_GetWidgetsValues:
+    def __init__(self):
+        pass
 
-
-def _stage_collect_blockers():
-    return tuple(ExecutionBlocker(None) for _ in range(5))
-
-
-class _StageBatchDynamicInputs(dict):
-    """Provide the dynamic `value_*` slot for flow_stage_list / flow_stage_collect_multi.
-
-    This dict MUST be a real mapping (with at least one key) so it round-trips
-    through `json.dumps` / `json.loads` correctly. The previous implementation
-    relied on the ``__contains__`` / ``__getitem__`` overrides of a dict subclass,
-    but ``json`` only serializes the underlying items, so the frontend received
-    an empty ``{}`` and the optional slot was never materialised on Linux.
-    """
-
-    def __init__(self, max_count=1):
-        super().__init__()
-        for i in range(1, max_count + 1):
-            self[f"value_{i}"] = (any_type, {"lazy": True})
-
-    def __contains__(self, key):
-        return isinstance(key, str) and key.startswith("value_")
-
-    def __getitem__(self, key):
-        if key in self:
-            return (any_type, {"lazy": True})
-        raise KeyError(key)
-
-
-class flow_stage_list:
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
-                "stage_info": (_STAGE_INFO_TYPE,),
+                "ANY" : (ANY_TYPE, {}), 
             },
-            "optional": _StageBatchDynamicInputs(),
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT", 
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
+        }
+    
+    NAME = "view_GetWidgetsValues"
+    RETURN_TYPES = ("LIST",) + tuple([ANY_TYPE for _ in range(_VIEW_GET_WIDGETS_VALUES_MAX_OUTPUTS)])
+    RETURN_NAMES = ("LIST",) + tuple([f"value_{i + 1}" for i in range(_VIEW_GET_WIDGETS_VALUES_MAX_OUTPUTS)])
+    OUTPUT_NODE = True
+    FUNCTION = "run"
+    CATEGORY = "Apt_Preset/PreView"
+    OUTPUT_NODE = True
+
+    def run(self, ANY, unique_id, prompt, extra_pnginfo):
+        node_list = extra_pnginfo["workflow"]["nodes"]  # list of dict including id, type
+        cur_node = next(n for n in node_list if str(n["id"]) == unique_id)
+        link_id = cur_node["inputs"][0]["link"]
+        link = next(l for l in extra_pnginfo["workflow"]["links"] if l[0] == link_id)
+        in_node_id, in_socket_id = link[1], link[2]
+        in_node = next(n for n in node_list if n["id"] == in_node_id)
+        in_node_type = str(in_node.get("type", ""))
+        widget_values = in_node.get("widgets_values", [])
+        if not isinstance(widget_values, list):
+            widget_values = [widget_values]
+
+        dynamic_items = []
+        prompt_data = prompt if isinstance(prompt, dict) else {}
+        prompt_node = prompt_data.get(str(in_node_id), {})
+        prompt_inputs = prompt_node.get("inputs", {}) if isinstance(prompt_node, dict) else {}
+        linked_input_names = {
+            input_info.get("name")
+            for input_info in in_node.get("inputs", [])
+            if isinstance(input_info, dict) and input_info.get("name")
+        }
+
+        if isinstance(prompt_inputs, dict):
+            for key, value in prompt_inputs.items():
+                if key in linked_input_names:
+                    continue
+                zh_key = _resolve_zh_input_name(in_node_type, str(key))
+                dynamic_items.append((zh_key, value))
+
+        if len(dynamic_items) == 0:
+            dynamic_items = [(f"value_{idx + 1}", value) for idx, value in enumerate(widget_values)]
+
+        dynamic_items = dynamic_items[:_VIEW_GET_WIDGETS_VALUES_MAX_OUTPUTS]
+        key_counter = {}
+        dynamic_keys = []
+        for key, _ in dynamic_items:
+            count = key_counter.get(key, 0) + 1
+            key_counter[key] = count
+            dynamic_keys.append(key if count == 1 else f"{key}_{count}")
+        dynamic_values = [item[1] for item in dynamic_items]
+        padded_values = dynamic_values + [None] * (_VIEW_GET_WIDGETS_VALUES_MAX_OUTPUTS - len(dynamic_values))
+
+        return comfy_api_io.NodeOutput(
+            widget_values, *padded_values,
+            ui={
+                "text": [f"{widget_values}"],
+                "output_keys": [dynamic_keys],
+            }
+        )
+
+
+
+
+
+
+
+
+class view_bridge_Text:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "optional": {
+                "text": ("STRING", {"forceInput": True}),
+                "display": ("STRING", {"default": "", "multiline": True}),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
             },
         }
 
-    RETURN_TYPES = (any_type, "LIST")
-    RETURN_NAMES = ("list", "array")
-    OUTPUT_IS_LIST = (True, False)
-    FUNCTION = "accumulate"
-    CATEGORY = "Apt_Preset/flow"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+
     OUTPUT_NODE = True
+    NAME = "view_bridge_Text"
+    CATEGORY = "Apt_Preset/PreView"
+    FUNCTION = "process"
+ 
+    def __init__(self):
+        self.last_text = None
+        # 新增：标记是否是首次执行（解决第一次无显示问题）
+        self.is_first_run = True
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, input_types):
-        return True
-
-    def check_lazy_status(self, stage_info, **kwargs):
-        _, stage_index, _ = _stage_validate_info(stage_info)
-        input_name = f"value_{stage_index + 1}"
-        if input_name in kwargs and kwargs[input_name] is None:
-            return [input_name]
-        return []
-
-    def accumulate(self, stage_info, unique_id=None, **kwargs):
-        run_id, stage_index, total = _stage_validate_info(stage_info)
-        input_name = f"value_{stage_index + 1}"
-        data = kwargs.get(input_name)
-        if data is None:
-            raise ValueError(f"flow_stage_list: {input_name} is not connected")
-
-        kind = _stage_detect_type(data, "auto")
-
-        batch_dir = os.path.join(_stage_batch_dir(run_id), _stage_safe_name(f"multi_{unique_id}"))
-        os.makedirs(batch_dir, exist_ok=True)
-        type_path = os.path.join(batch_dir, "multi_type.json")
-        if stage_index == 0:
-            _stage_write_json(type_path, {"type": kind})
+    def process(self, text="", display="", unique_id=None):
+        if isinstance(text, list):
+            current_text = text[0] if text else ""
         else:
-            if not os.path.isfile(type_path):
-                raise ValueError("flow_stage_list: first stage type information is missing")
-            with open(type_path, "r", encoding="utf-8") as handle:
-                first_kind = json.load(handle).get("type")
-            if kind != first_kind:
-                raise TypeError(f"flow_stage_list: {input_name} must be {first_kind}, got {kind}")
+            current_text = text
 
-        _stage_batch_save(data, batch_dir, kind, stage_index, storage_kind="multi")
-        if stage_index != total - 1:
-            blocker = ExecutionBlocker(None)
-            return (blocker, blocker)
+        # 核心修改：区分「首次执行」和「内容无变化」
+        if self.is_first_run:
+            # 首次执行：强制使用 current_text，同时标记首次执行结束
+            use_simple = False
+            self.is_first_run = False
+        else:
+            # 非首次：保留原有逻辑（内容无变化时用 display）
+            use_simple = (current_text == self.last_text)
 
-        items = [_stage_batch_load(batch_dir, "multi", index) for index in range(total)]
-        if any(item is None for item in items):
-            missing = [str(index + 1) for index, item in enumerate(items) if item is None]
-            raise ValueError(f"flow_stage_list: missing stage data: {', '.join(missing)}")
-        return (items, items)
+        self.last_text = current_text
+
+        if use_simple:
+            input_text = display
+        else:
+            input_text = current_text
+
+        displayText = self.render(input_text)
+        updateTextWidget(unique_id, "display", displayText)
+        
+        return comfy_api_io.NodeOutput(input_text, ui={"display": [displayText]})
+
+    def render(self, input):
+        if not isinstance(input, list):
+            return input
+
+        listLen = len(input)
+
+        if listLen == 0:
+            return ""
+
+        if listLen == 1:
+            return input[0]
+
+        result = "List:\n"
+
+        for i, element in enumerate(input):
+            result += f">>{i}<< {element}\n"
+        return result
 
 
-class flow_stage_collect_single:
-    """Accumulate tensor batches and merge video/audio across flow_stage stages."""
+
+
+#endregion-----------------------旧-------------------------------------------------------#.
+
+
+class view_Mask_And_Img(SaveImage):
+    def __init__(self):
+        self.output_dir = folder_paths.get_temp_directory()
+        self.type = "temp"
+        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5))
+        self.compress_level = 4
 
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
-                "stage_info": (_STAGE_INFO_TYPE,),
+                "mask_opacity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             },
             "optional": {
                 "image": ("IMAGE",),
-                "mask": ("MASK",),
-                "latent": ("LATENT",),
-                "video": ("VIDEO",),
-                "audio": ("AUDIO",),
+                "mask": ("MASK",),                
             },
-            "hidden": {
-                "unique_id": "UNIQUE_ID",
-            },
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "LATENT", "VIDEO", "AUDIO")
-    RETURN_NAMES = ("image_batch", "mask_batch", "latent_batch", "merged_video", "merged_audio")
-    FUNCTION = "accumulate"
-    CATEGORY = "Apt_Preset/flow"
+
+    FUNCTION = "execute"
+    CATEGORY = "Apt_Preset/PreView"
     OUTPUT_NODE = True
+    NAME = "view_Mask_And_Img"
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
+    def execute(self, mask_opacity, filename_prefix="ComfyUI", image=None, mask=None, prompt=None, extra_pnginfo=None):
+        if mask is not None and image is None:
+            preview = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
+        elif mask is None and image is not None:
+            if image.shape[-1] == 4:
+                image = image[..., :3]
+            preview = image
+        elif mask is not None and image is not None:
+            if image.shape[-1] == 4:
+                image = image[..., :3]
+            mask_adjusted = mask * mask_opacity
+            mask_image = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3).clone()
+            color_list = [0, 0, 0]
+            mask_image[:, :, :, 0] = color_list[0] / 255
+            mask_image[:, :, :, 1] = color_list[1] / 255
+            mask_image[:, :, :, 2] = color_list[2] / 255
+            preview, = ImageCompositeMasked.composite(self, image, mask_image, 0, 0, True, mask_adjusted)
+        else:
+            preview = torch.zeros((1, 64, 64, 3), dtype=torch.float32, device="cpu")
 
-    def accumulate(self, stage_info, image=None, mask=None, latent=None, video=None, audio=None, unique_id=None):
-        run_id, stage_index, total = _stage_validate_info(stage_info)
-        batch_dir = os.path.join(_stage_batch_dir(run_id), _stage_safe_name(f"single_{unique_id}"))
-        os.makedirs(batch_dir, exist_ok=True)
-
-        if image is not None:
-            _stage_batch_save(image, batch_dir, "image", stage_index)
-        if mask is not None:
-            _stage_batch_save(mask, batch_dir, "mask", stage_index)
-        if latent is not None:
-            _stage_batch_save(latent, batch_dir, "latent", stage_index)
-        if video is not None:
-            _stage_save_video_segment(video, batch_dir, stage_index)
-        if audio is not None:
-            _stage_batch_save(audio, batch_dir, "audio", stage_index)
-
-        if stage_index != total - 1:
-            return _stage_collect_blockers()
-
-        message = f"single-port stages {total}/{total} merged: {batch_dir}"
-        return {
-            "ui": {"text": [message]},
-            "result": _stage_collect_outputs(batch_dir, total),
-        }
+        return self.save_images(preview, filename_prefix, prompt, extra_pnginfo)
 
 
-class flow_stage_collect_multi:
+class IO_input_any:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "stage_info": (_STAGE_INFO_TYPE,),
+                "text": ("STRING", {"multiline": True, "default": "", }),
             },
-            "optional": _StageBatchDynamicInputs(),
-            "hidden": {
-                "unique_id": "UNIQUE_ID",
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE", "MASK", "LATENT", "VIDEO", "AUDIO")
-    RETURN_NAMES = ("image_batch", "mask_batch", "latent_batch", "merged_video", "merged_audio")
-    FUNCTION = "accumulate"
-    CATEGORY = "Apt_Preset/flow"
-    OUTPUT_NODE = True
-
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, input_types):
-        return True
-
-    def check_lazy_status(self, stage_info, **kwargs):
-        _, stage_index, _ = _stage_validate_info(stage_info)
-        input_name = f"value_{stage_index + 1}"
-        if input_name in kwargs and kwargs[input_name] is None:
-            return [input_name]
-        return []
-
-    def accumulate(self, stage_info, unique_id=None, **kwargs):
-        run_id, stage_index, total = _stage_validate_info(stage_info)
-        input_name = f"value_{stage_index + 1}"
-        data = kwargs.get(input_name)
-        if data is None:
-            raise ValueError(f"flow_stage_collect_multi: {input_name} is not connected")
-
-        kind = _stage_detect_type(data, "auto")
-        if kind not in ("image", "mask", "latent", "video", "audio"):
-            raise TypeError(f"flow_stage_collect_multi: {input_name} has unsupported type {kind}")
-
-        batch_dir = os.path.join(_stage_batch_dir(run_id), _stage_safe_name(f"multi_{unique_id}"))
-        os.makedirs(batch_dir, exist_ok=True)
-        type_path = os.path.join(batch_dir, "type.json")
-        if stage_index == 0:
-            _stage_write_json(type_path, {"type": kind})
-        else:
-            if not os.path.isfile(type_path):
-                raise ValueError("flow_stage_collect_multi: first stage type information is missing")
-            with open(type_path, "r", encoding="utf-8") as handle:
-                first_kind = json.load(handle).get("type")
-            if kind != first_kind:
-                raise TypeError(f"flow_stage_collect_multi: {input_name} must be {first_kind}, got {kind}")
-
-        if kind == "video":
-            _stage_save_video_segment(data, batch_dir, stage_index)
-        else:
-            _stage_batch_save(data, batch_dir, kind, stage_index)
-        if stage_index != total - 1:
-            return _stage_collect_blockers()
-
-        if kind == "video":
-            items = [
-                path if os.path.isfile(path) else None
-                for path in (_stage_video_segment_path(batch_dir, index) for index in range(total))
-            ]
-        else:
-            items = [_stage_batch_load(batch_dir, kind, index) for index in range(total)]
-        if any(item is None for item in items):
-            missing = [str(index + 1) for index, item in enumerate(items) if item is None]
-            raise ValueError(f"flow_stage_collect_multi: missing stage data: {', '.join(missing)}")
-
-        message = f"multi-port stages {total}/{total} merged: {batch_dir}"
-        return {
-            "ui": {"text": [message]},
-            "result": _stage_collect_outputs(batch_dir, total),
-        }
-
-
-FLOW_VALUE_STORE = {}
-
-
-def _normalize_flow_var_name(variable):
-    if variable is None:
-        return ""
-    return str(variable).strip()
-
-
-
-MAX_FLOW_NUM = 20
-
-
-from comfy_execution.graph_utils import GraphBuilder, is_link
-
-
-class flow_whileStart:
-    @classmethod
-    def INPUT_TYPES(cls):
-        inputs = {
-            "required": {
-                "condition": ("BOOLEAN", {"default": True}),
-            },
-            "optional": {},
-        }
-        for i in range(MAX_FLOW_NUM):
-            inputs["optional"]["initial_value_%d" % i] = (any_type,)
-        return inputs
-    
-    NAME="loop_whileStart"
-    RETURN_TYPES = ByPassTypeTuple(tuple(["FLOW_CL"] + [any_type] * MAX_FLOW_NUM))
-    RETURN_NAMES = ByPassTypeTuple(tuple(["flow"] + ["value_%d" % i for i in range(MAX_FLOW_NUM)]))
-    FUNCTION = "while_loop_open"
-    CATEGORY = "Apt_Preset/flow/other"
-
-    def while_loop_open(self, condition, **kwargs):
-        
-        values = []
-        for i in range(MAX_FLOW_NUM):
-            val = kwargs.get("initial_value_%d" % i, None)
-            values.append(val if condition else ExecutionBlocker(None))
-        return tuple(["stub"] + values)
-
-
-class flow_whileEnd:
-    @classmethod
-    def INPUT_TYPES(cls):
-        inputs = {
-            "required": {
-                "flow": ("FLOW_CL", {"rawLink": True}),
-                "condition": ("BOOLEAN", {}),
-            },
-            "optional": {},
-            "hidden": {
-                "dynprompt": "DYNPROMPT",
-                "unique_id": "UNIQUE_ID",
+            "optional": {
+                "split_preset": (
+                    ["Custom", "None", "Line", "Space", "Comma", "Period", "Semicolon", "Tab", "Pipe"],
+                    {"default": "None"}
+                ),
+                "delimiter": ("STRING", {
+                    "default": "",
+                    "multiline": False
+                }),
+                "output_type": (["float", "int", "string", "anytype", "dictionary", "set", "tuple", "boolean"], {"default": "anytype"}),
             }
         }
-        for i in range(MAX_FLOW_NUM):
-            inputs["optional"]["initial_value_%d" % i] = (any_type,)
-        return inputs
-    NAME="loop_whileEnd"
-    RETURN_TYPES = ByPassTypeTuple(tuple([any_type] * MAX_FLOW_NUM))
-    RETURN_NAMES = ByPassTypeTuple(tuple(["value_%d" % i for i in range(MAX_FLOW_NUM)]))
-    FUNCTION = "while_loop_close"
-    CATEGORY = "Apt_Preset/flow/other"
 
-    def explore_dependencies(self, node_id, dynprompt, upstream, parent_ids):
+    RETURN_TYPES = (ANY_TYPE, "LIST")
+    RETURN_NAMES = ("data", "list")
+    FUNCTION = "process_text"
+    CATEGORY = "Apt_Preset/IO_Port"
+    OUTPUT_IS_LIST = (True, False)
+    DESCRIPTION = """
+    文本拆分预设说明
+    None：不做任何处理。
+    Line：按行拆分。
+    Space：按空格拆分。
+    Comma：按逗号拆分。
+    Period：按句号拆分。
+    Semicolon：按分号拆分。
+    Tab：用\\t（制表符）拆分。
+    Pipe：以|（竖线）拆分。
+    Custom：使用自定义分隔符
+    """ 
+
+
+    def process_text(self, text, split_preset="None", delimiter="", output_type="anytype"):
+        preset_map = {
+            "None": [],
+            "Line": ["\n", "\r\n"],
+            "Space": [" ", "　"],
+            "Comma": [",", "，"],
+            "Period": [".", "。"],
+            "Semicolon": [";", "；"],
+            "Tab": ["\t"],
+            "Pipe": ["|"],
+            "Custom": []
+        }
+        separators = preset_map.get(split_preset, [])
         
-        node_info = dynprompt.get_node(node_id)
-        if "inputs" not in node_info:
-            return
-
-        for k, v in node_info["inputs"].items():
-            if is_link(v):
-                parent_id = v[0]
-                display_id = dynprompt.get_display_node_id(parent_id)
-                display_node = dynprompt.get_node(display_id)
-                class_type = display_node["class_type"]
-                loop_node_types = [
-                    'flow_forEnd', 'flow_forEnd',
-                    'flow_whileEnd', 'flow_whileEnd'
-                ]
-                if class_type not in loop_node_types:
-                    parent_ids.append(display_id)
-                if parent_id not in upstream:
-                    upstream[parent_id] = []
-                    self.explore_dependencies(parent_id, dynprompt, upstream, parent_ids)
-                upstream[parent_id].append(node_id)
-
-    def collect_contained(self, node_id, upstream, contained):
-        if node_id not in upstream:
-            return
-        for child_id in upstream[node_id]:
-            if child_id not in contained:
-                contained[child_id] = True
-                self.collect_contained(child_id, upstream, contained)
-
-    def explore_output_nodes(self, dynprompt, upstream, output_nodes, parent_ids):
-        for parent_id in upstream:
-            display_id = dynprompt.get_display_node_id(parent_id)
-            for output_id in output_nodes:
-                input_link = output_nodes[output_id]
-                if not is_link(input_link):
-                    continue
-                source_id = input_link[0]
-                if source_id in parent_ids and display_id == source_id and output_id not in upstream[parent_id]:
-                    if "." in parent_id:
-                        arr = parent_id.split(".")
-                        arr[len(arr) - 1] = output_id
-                        upstream[parent_id].append(".".join(arr))
-                    else:
-                        upstream[parent_id].append(output_id)
-
-    def while_loop_close(self, flow, condition, dynprompt=None, unique_id=None, **kwargs):
-        if not condition:
-            return tuple(kwargs.get("initial_value_%d" % i, None) for i in range(MAX_FLOW_NUM))
-
+        if split_preset == "Custom" and delimiter:
+            delimiter = delimiter.replace("\\n", "\n").replace("\\t", "\t").replace("\\s", " ").replace("\\r", "\r")
+            separators = [delimiter]
         
-        upstream = {}
-        parent_ids = []
-        self.explore_dependencies(unique_id, dynprompt, upstream, parent_ids)
-        parent_ids = list(set(parent_ids))
-
-        output_nodes = {}
-        prompts = dynprompt.get_original_prompt()
-        for node_id in prompts:
-            node = prompts[node_id]
-            if "inputs" not in node:
-                continue
-            class_type = node.get("class_type")
-            class_def = nodes.NODE_CLASS_MAPPINGS.get(class_type)
-            if class_def is None:
-                continue
-            if hasattr(class_def, "OUTPUT_NODE") and class_def.OUTPUT_NODE is True:
-                for _, v in node["inputs"].items():
-                    if is_link(v):
-                        output_nodes[node_id] = v
-                        break
+        text = text.strip()
         
-        graph = GraphBuilder()
-        self.explore_output_nodes(dynprompt, upstream, output_nodes, parent_ids)
-        contained = {}
-        
-        if flow is None or len(flow) == 0:
-             return tuple([None] * MAX_FLOW_NUM)
-
-        open_node = flow[0]
-        self.collect_contained(open_node, upstream, contained)
-        contained[unique_id] = True
-        contained[open_node] = True
-
-        for node_id in contained:
-            original_node = dynprompt.get_node(node_id)
-            node = graph.node(original_node["class_type"], "Recurse" if node_id == unique_id else node_id)
-            node.set_override_display_id(node_id)
-            
-        for node_id in contained:
-            original_node = dynprompt.get_node(node_id)
-            node = graph.lookup_node("Recurse" if node_id == unique_id else node_id)
-            for k, v in original_node["inputs"].items():
-                if is_link(v) and v[0] in contained:
-                    parent = graph.lookup_node(v[0])
-                    node.set_input(k, parent.out(v[1]))
+        if output_type == "boolean":
+            try:
+                if text.lower() in ["true", "yes", "1", "on"]:
+                    return ([True], [text])
+                elif text.lower() in ["false", "no", "0", "off"]:
+                    return ([False], [text])
                 else:
-                    node.set_input(k, v)
-
-        new_open = graph.lookup_node(open_node)
-        for i in range(MAX_FLOW_NUM):
-            key = "initial_value_%d" % i
-            new_open.set_input(key, kwargs.get(key, None))
-            
-        my_clone = graph.lookup_node("Recurse")
-        result = [my_clone.out(i) for i in range(MAX_FLOW_NUM)]
+                    return ([bool(ast.literal_eval(text))], [text])
+            except Exception as e:
+                print(f"解析布尔值失败: {e}")
+                return ([False], [text])
         
-        return {
-            "result": tuple(result),
-            "expand": graph.finalize(),
-        }
-
-
-class flow_forStart:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "total": ("INT", {"default": 1, "min": 1, "max": 100000}),
-            },
-            "optional": {
-                "initial_value_%d" % i: (any_type,) for i in range(1, MAX_FLOW_NUM)
-            },
-            "hidden": {
-                "initial_value_0": (any_type,),
-                "unique_id": "UNIQUE_ID"
-            }
-        }
-    NAME="loop_forStart"
-    RETURN_TYPES = ByPassTypeTuple(tuple(["FLOW_CL", "INT"] + [any_type] * (MAX_FLOW_NUM - 1)))
-    RETURN_NAMES = ByPassTypeTuple(tuple(["flow", "index"] + ["value_%d" % i for i in range(1, MAX_FLOW_NUM)]))
-    FUNCTION = "loop_start"
-    CATEGORY = "Apt_Preset/flow"
-
-    def loop_start(self, total, **kwargs):
-        graph = GraphBuilder()
-        i = kwargs.get("initial_value_0", 0)
-
-        outputs = []
-        initial_vals = {}
-        for n in range(1, MAX_FLOW_NUM):
-            val = kwargs.get(f"initial_value_{n}")
-            if n == MAX_FLOW_NUM - 1 and val is None:
-                val = total
-            outputs.append(val)
-            initial_vals[f"initial_value_{n}"] = val
-
-        graph.node(
-            "flow_whileStart",
-            condition=total,
-            initial_value_0=i,
-            **initial_vals
-        )
-
-        return {
-            "result": tuple(["stub", i] + outputs),
-            "expand": graph.finalize(),
-        }
-    
-
-class flow_forEnd:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "flow": ("FLOW_CL", {"rawLink": True}),
-                "batch_output": ("BOOLEAN", {"default": True}),
-            },
-            "optional": {
-                "initial_value_%d" % i: (any_type, {"rawLink": True}) for i in range(1, MAX_FLOW_NUM)
-            },
-            "hidden": {
-                "dynprompt": "DYNPROMPT",
-                "unique_id": "UNIQUE_ID"
-            },
-        }
-    
-    NAME = "loop_forEnd"
-    RETURN_TYPES = ByPassTypeTuple(tuple([any_type] * (MAX_FLOW_NUM - 1)))
-    RETURN_NAMES = ByPassTypeTuple(tuple(["value_%d" % i for i in range(1, MAX_FLOW_NUM)]))
-    FUNCTION = "loop_end"
-    CATEGORY = "Apt_Preset/flow"
-
-    def loop_end(self, flow, batch_output=True, dynprompt=None, unique_id=None, **kwargs):
+        if output_type == "dictionary" or (output_type == "anytype" and text.startswith("{") and text.endswith("}")):
+            try:
+                parsed = ast.literal_eval(text)
+                if not isinstance(parsed, dict):
+                    raise ValueError("解析结果不是字典")
+                return ([parsed], [text])
+            except Exception as e:
+                print(f"解析字典失败: {e}")
         
-        graph = GraphBuilder()
+        elif output_type == "set" or (output_type == "anytype" and text.startswith("{") and text.endswith("}") and ":" not in text):
+            try:
+                if text == "{}":
+                    parsed = set()
+                else:
+                    set_content = text[1:-1]
+                    parsed = set(ast.literal_eval(f"({set_content},)"))
+                return ([parsed], [text])
+            except Exception as e:
+                print(f"解析集合失败: {e}")
         
-        if flow is None or not isinstance(flow, (list, tuple)) or len(flow) == 0:
-            return tuple(kwargs.get(f"initial_value_{i}") for i in range(1, MAX_FLOW_NUM))
-            
-        while_open_id = flow[0]
-        start_node = dynprompt.get_node(while_open_id)
+        elif output_type == "tuple" or (output_type == "anytype" and (text.startswith("(") and text.endswith(")") or "," in text)):
+            try:
+                if text == "()":
+                    parsed = ()
+                elif text.endswith(",") and not text.startswith("("):
+                    parsed = ast.literal_eval(f"({text})")
+                else:
+                    parsed = ast.literal_eval(text)
+                if not isinstance(parsed, tuple):
+                    parsed = (parsed,)
+                return ([parsed], [text])
+            except Exception as e:
+                print(f"解析元组失败: {e}")
         
-        if start_node is None:
-             return tuple(kwargs.get(f"initial_value_{i}") for i in range(1, MAX_FLOW_NUM))
-
-        total = None
-        total_input = start_node.get("inputs", {}).get("total")
-        if total_input is not None:
-            if is_link(total_input):
-                total = total_input
-            else:
-                try:
-                    if isinstance(total_input, torch.Tensor):
-                        total = int(total_input.item()) if total_input.numel() == 1 else 0
-                    else:
-                        total = int(total_input)
-                except (ValueError, TypeError):
-                    total = 0
-        
-        if total is None or (isinstance(total, list) and len(total) == 0):
-            total = MAX_FLOW_NUM
-
-        sub = graph.node(
-            "math_calculate", 
-            preset="a + b", 
-            expression="", 
-            a=[while_open_id, 1], 
-            b=1,
-            c=None
-        )
-        cond = graph.node(
-            "math_calculate", 
-            preset="a < b", 
-            expression="", 
-            a=sub.out(1),
-            b=total,
-            c=None
-        )
-
-        input_values = {}
-        for i in range(1, MAX_FLOW_NUM):
-            key = f"initial_value_{i}"
-            v = kwargs.get(key)
-            
-            if batch_output and is_link(v):
-                collector = graph.node("flow_createbatch", any_1=[while_open_id, i + 1], any_2=v)
-                input_values[key] = collector.out(0)
-            else:
-                input_values[key] = v
-        
-        while_close = graph.node(
-            "flow_whileEnd", 
-            flow=flow, 
-            condition=cond.out(2),
-            initial_value_0=sub.out(1),
-            **input_values
-        )
-        
-        results = []
-        for i in range(1, MAX_FLOW_NUM):
-            out = while_close.out(i)
-            results.append(out)
-
-        return {
-            "result": tuple(results),
-            "expand": graph.finalize(),
-        }
-
-
-class flow_createbatch:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "any_1": (any_type, {}),
-                "any_2": (any_type, {})
-            }
-        }
-    
-    NAME="loop_createbatch"
-    RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("batch",)
-
-    FUNCTION = "batch"
-    CATEGORY = "Apt_Preset/stack/register"
-
-    def latentBatch(self, any_1, any_2):
-        samples_out = any_1.copy()
-        s1 = any_1["samples"]
-        s2 = any_2["samples"]
-
-        if s1.shape[1:] != s2.shape[1:]:
-            s2 = comfy.utils.common_upscale(s2, s1.shape[3], s1.shape[2], "bilinear", "center")
-        s = torch.cat((s1, s2), dim=0)
-        samples_out["samples"] = s
-        samples_out["batch_index"] = any_1.get("batch_index",
-                                               [x for x in range(0, s1.shape[0])]) + any_2.get(
-            "batch_index", [x for x in range(0, s2.shape[0])])
-
-        return samples_out
-
-    def batch(self, any_1, any_2):
-        if isinstance(any_1, torch.Tensor) or isinstance(any_2, torch.Tensor):
-            if any_1 is None:
-                return (any_2,)
-            elif any_2 is None:
-                return (any_1,)
-            if any_1.shape[1:] != any_2.shape[1:]:
-                any_2 = comfy.utils.common_upscale(any_2.movedim(-1, 1), any_1.shape[2], any_1.shape[1], "bilinear",
-                                                   "center").movedim(1, -1)
-            return (torch.cat((any_1, any_2), 0),)
-        elif isinstance(any_1, (str, float, int)):
-            if any_2 is None:
-                return (any_1,)
-            elif isinstance(any_2, tuple):
-                return (any_2 + (any_1,),)
-            elif isinstance(any_2, list):
-                return (any_2 + [any_1],)
-            return ([any_1, any_2],)
-        elif isinstance(any_2, (str, float, int)):
-            if any_1 is None:
-                return (any_2,)
-            elif isinstance(any_1, tuple):
-                return (any_1 + (any_2,),)
-            elif isinstance(any_1, list):
-                return (any_1 + [any_2],)
-            return ([any_2, any_1],)
-        elif isinstance(any_1, dict) and 'samples' in any_1:
-            if any_2 is None:
-                return (any_1,)
-            elif isinstance(any_2, dict) and 'samples' in any_2:
-                return (self.latentBatch(any_1, any_2),)
-        elif isinstance(any_2, dict) and 'samples' in any_2:
-            if any_1 is None:
-                return (any_2,)
-            elif isinstance(any_1, dict) and 'samples' in any_1:
-                return (self.latentBatch(any_2, any_1),)
+        if split_preset == "None":
+            items = [text] if text else []
+        elif separators:
+            escaped_seps = [re.escape(sep) for sep in separators if sep]
+            sep_pattern = '|'.join(escaped_seps)
+            items = re.split(f'(?:{sep_pattern})', text)
         else:
-            if any_1 is None:
-                return (any_2,)
-            elif any_2 is None:
-                return (any_1,)
-            return (any_1 + any_2,)
+            items = re.split(r'[\s,]+', text)
+        
+        items = [item.strip() for item in items if item.strip()]
+        
+        converted_result = []
+        for item in items:
+            if output_type == "int":
+                try:
+                    converted_result.append(int(item))
+                except ValueError:
+                    converted_result.append(0)
+            elif output_type == "float":
+                try:
+                    converted_result.append(float(item))
+                except ValueError:
+                    converted_result.append(0.0)
+            elif output_type == "string":
+                converted_result.append(item)
+            elif output_type == "boolean":
+                if item.lower() in ["true", "yes", "1", "on"]:
+                    converted_result.append(True)
+                elif item.lower() in ["false", "no", "0", "off"]:
+                    converted_result.append(False)
+                else:
+                    converted_result.append(bool(item))
+            elif output_type == "anytype":
+                try:
+                    num = int(item)
+                    converted_result.append(num)
+                except ValueError:
+                    try:
+                        num = float(item)
+                        converted_result.append(num)
+                    except ValueError:
+                        if item.lower() in ["true", "yes", "1", "on"]:
+                            converted_result.append(True)
+                        elif item.lower() in ["false", "no", "0", "off"]:
+                            converted_result.append(False)
+                        else:
+                            converted_result.append(item)
+        
+        return (converted_result, items)
 
 
 
 
 
 
-import time
-import subprocess
-import sys
-import threading
-import os
+def _resolve_io_latent_path(latent_path, clip_index=0):
+    path = (latent_path or "").strip().strip('"').strip("'")
+    if not path:
+        path = "bridge_latent"
+
+    output_directory = folder_paths.get_output_directory()
+    candidates = [path, os.path.join(output_directory, path)]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+        if not os.path.isdir(candidate):
+            continue
+
+        index = int(clip_index)
+        if index > 0:
+            endings = (f"_{index:05d}.safetensors", f"_clip{index:03d}.safetensors")
+            files = [os.path.join(candidate, filename) for filename in os.listdir(candidate) if filename.endswith(endings)]
+            if not files:
+                raise FileNotFoundError(f"IO_loadLatent: no saved latent for file index {index} in {candidate}")
+        else:
+            files = [os.path.join(candidate, filename) for filename in os.listdir(candidate) if filename.endswith(".safetensors")]
+            if not files:
+                raise FileNotFoundError(f"IO_loadLatent: no saved latents in {candidate}")
+        return max(files, key=os.path.getmtime)
+
+    raise FileNotFoundError(f"IO_loadLatent: {path!r} is neither a file nor a folder")
 
 
-class flow_AutoShutdown:
+class IO_loadLatent:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "current_task_count": ("INT", {"default": 0, "min": 0,  "forceinput": True}),
-                "target_task_count": ("INT", {"default": 10, "min": 1, }),
-                "action_delay_minutes": ("FLOAT", {"default": 5.0, "min": 0.0, "step": 0.5, }),
-                "action_type": (["None", "关机", "睡眠"], {"default": "None", }),
-            }
+                "latent_path": ("STRING", {
+                    "default": "bridge_latent",
+                    "tooltip": "Latent file or folder. Relative paths are resolved from the ComfyUI output folder.",
+                }),
+                "clip_index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 9999,
+                    "tooltip": "Clip number to load from a folder. 0 loads the newest safetensors file.",
+                }),
+            },
         }
 
-    RETURN_TYPES = ()
-    FUNCTION = "check_and_execute"
-    OUTPUT_NODE = True
-    CATEGORY = "Apt_Preset/flow/other"
-    DESCRIPTION = "当完成任务数达到目标值时执行指定操作（关机/睡眠/无操作）"
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("Latent",)
+    FUNCTION = "load"
+    CATEGORY = "Apt_Preset/IO_Port"
+    DESCRIPTION = "Load a latent saved by IO_SaveLatent, flow_stage, or ComfyUI SaveLatent."
 
-    def check_and_execute(self, current_task_count, target_task_count, action_delay_minutes, action_type):
-        # 如果选择None（无操作），直接返回
-        if action_type == "None":
-            return ()
-        
-        # 检查任务数是否达标
-        if current_task_count == target_task_count:
-            print(f"[自动关机] 检测到完成任务数 {current_task_count} 达到目标值 {target_task_count}，准备执行：{action_type}")
-            threading.Thread(
-                target=self.delayed_action,
-                args=(action_delay_minutes, action_type),
-                daemon=True
-            ).start()
-        
-        return ()
-
-    def delayed_action(self, delay_minutes, action_type):
-        delay_seconds = delay_minutes * 60
-        
-        if delay_seconds > 0:
-            print(f"[自动关机] 将在 {delay_minutes} 分钟({delay_seconds}秒)后执行：{action_type}")
-            time.sleep(delay_seconds)
-        
+    @classmethod
+    def IS_CHANGED(cls, latent_path, clip_index=0):
         try:
-            if action_type == "关机":
-                self.shutdown_computer()
-            elif action_type == "睡眠":
-                self.sleep_computer()
-            print(f"[自动关机] {action_type} 命令已执行")
-        except Exception as e:
-            print(f"[自动关机] {action_type} 执行失败：{str(e)}")
+            path = _resolve_io_latent_path(latent_path, clip_index)
+            return f"{path}:{os.stat(path).st_mtime_ns}"
+        except Exception:
+            return float("NaN")
 
-    def shutdown_computer(self):
-        if sys.platform == "win32":
-            subprocess.run(["shutdown", "/s", "/t", "0"], check=True)
-        elif sys.platform in ["linux", "darwin"]:
-            subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
+    def load(self, latent_path, clip_index=0):
+        path = _resolve_io_latent_path(latent_path, clip_index)
+        data, metadata = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
 
-    def sleep_computer(self):
-        if sys.platform == "win32":
-            subprocess.run(["powercfg", "-hibernate", "off"], check=True)
-            subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=True)
-        elif sys.platform == "darwin":
-            subprocess.run(["pmset", "sleepnow"], check=True)
-        elif sys.platform == "linux":
-            subprocess.run(["systemctl", "suspend"], check=True)
+        if metadata is not None and "stage_payload" in metadata:
+            latent = _stage_decode_payload(path)
+            if not isinstance(latent, dict) or "samples" not in latent:
+                payload_type = json.loads(metadata["stage_payload"]).get("type", "unknown data")
+                raise ValueError(f"IO_loadLatent: {path} contains {payload_type}, not latent")
+            return (latent,)
+
+        if "video" in data and "audio" in data:
+            return ({"samples": comfy.nested_tensor.NestedTensor([data["video"], data["audio"]])},)
+
+        if "latent_tensor" in data:
+            multiplier = 1.0 if "latent_format_version_0" in data else 1.0 / 0.18215
+            return ({"samples": data["latent_tensor"].float() * multiplier},)
+
+        if "samples" in data:
+            return (data,)
+
+        raise ValueError(f"IO_loadLatent: {path} does not contain a supported latent")
 
 
+class IO_SaveLatent:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT",),
+                "filename_prefix": ("STRING", {"default": "bridge_latent/clip"}),
+                "clip_index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 9999,
+                    "tooltip": "Fixed clip number to overwrite. 0 creates a new numbered file on every run.",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("latent_path",)
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+    CATEGORY = "Apt_Preset/IO_Port"
+    DESCRIPTION = "Save any ComfyUI latent while preserving its tensor and metadata fields."
+
+    def save(self, latent, filename_prefix, clip_index=0):
+        tensors, descriptor = _stage_encode_payload(latent, "latent")
+        folder, filename, counter, _, _ = folder_paths.get_save_image_path(
+            filename_prefix, folder_paths.get_output_directory()
+        )
+        if int(clip_index) > 0:
+            path = os.path.join(folder, f"{filename}_{int(clip_index):05d}.safetensors")
+        else:
+            path = os.path.join(folder, f"{filename}_{counter:05d}_.safetensors")
+        temp_path = path + ".tmp"
+        try:
+            comfy.utils.save_torch_file(
+                tensors,
+                temp_path,
+                metadata={"stage_payload": json.dumps(descriptor, ensure_ascii=False)},
+            )
+            os.replace(temp_path, path)
+        finally:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        return (path,)
 
 
-
-
-import time
-import hashlib
-import pickle
-from collections import defaultdict
-
-class flow_ChangeDetector:
-    object_cache = defaultdict(dict)
-
+class IO_load_anyimage:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "object1": ("*",),
-                "object2": ("*",),
-                "delay_threshold_seconds": ("FLOAT", {
-                    "default": 10.0, 
-                    "min": 0.1, 
-                    "max": 300.0, 
-                    "step": 0.1
+                "file_path": ("STRING", {"default": "./input/Apt_in",}),
+                "remove_extension": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "控制输出的文件名是否包含扩展名"
                 }),
             },
             "optional": {
-                "cache_key1": ("STRING", {"default": "obj1"}),
-                "cache_key2": ("STRING", {"default": "obj2"}),
+                "max_images": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
+                "Include_keyword": ("STRING", {"default": "", "multiline": False}),
+                "include_subfolders": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "是否包含子文件夹中的图片"
+                }),
+                "index": ("INT", {"default": 0, "min": 0, "max": 1000000, "step": 1, "tooltip":"从0开始，0对应第一个元素；负数表示倒数，-1为最后一个元素"}),
+            }
+        }
+    RETURN_TYPES = ('IMAGE', "STRING", "STRING", 'IMAGE', "STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("images", "file_names", "file_paths", "img_index", "name_index", "path_index", "index", "total")
+    OUTPUT_IS_LIST = (True, True, True, False, False, False, False, False)
+    FUNCTION = "get_transparent_image"
+    CATEGORY = "Apt_Preset/IO_Port"
+    
+    def get_transparent_image(self, file_path, remove_extension=False, max_images=0, Include_keyword="", include_subfolders=False, index=0):
+        try:
+            image_list = []
+            file_names = []
+            file_paths = []
+            
+            file_path = file_path.strip('"')
+            
+            if os.path.isdir(file_path):
+                # 收集所有图片文件路径
+                all_image_files = []
+                
+                if include_subfolders:
+                    # 递归搜索子文件夹
+                    for root, dirs, files in os.walk(file_path):
+                        for f in files:
+                            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                                all_image_files.append(os.path.join(root, f))
+                else:
+                    # 仅搜索当前文件夹
+                    all_image_files = [os.path.join(file_path, f) for f in os.listdir(file_path) 
+                                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+                
+                # 关键字过滤
+                if Include_keyword:
+                    all_image_files = [f for f in all_image_files if Include_keyword in os.path.basename(f)]
+                
+                # 排序
+                all_image_files.sort()
+                
+                # 限制数量
+                if max_images > 0:
+                    all_image_files = all_image_files[:max_images]
+                
+                for img_path in all_image_files:
+                    image = Image.open(img_path).convert('RGBA')
+                    
+                    # 直接处理为张量，不调整尺寸
+                    image_np = np.array(image).astype(np.float32) / 255.0
+                    image_tensor = torch.from_numpy(image_np)[None, :, :, :]
+                    image_list.append(image_tensor)
+                    
+                    # 处理文件名，根据remove_extension决定是否移除扩展名
+                    filename = os.path.basename(img_path)
+                    if remove_extension:
+                        file_names.append(os.path.splitext(filename)[0])
+                    else:
+                        file_names.append(filename)
+                    
+                    # 添加完整文件路径
+                    file_paths.append(img_path)
+                
+                if not image_list:
+                    blank = torch.zeros((1, 64, 64, 4), dtype=torch.float32)
+                    return [], [], [], blank, "", "", 0, 0
+                
+                total = len(image_list)
+                # 处理索引
+                if index < 0:
+                    safe_index = max(0, total + index)
+                else:
+                    safe_index = min(index, total - 1)
+                
+                return image_list, file_names, file_paths, image_list[safe_index], file_names[safe_index], file_paths[safe_index], safe_index, total
+            else:
+                image = Image.open(file_path)
+                if image is not None:
+                    image_rgba = image.convert('RGBA')
+                    
+                    if Include_keyword and Include_keyword not in os.path.basename(file_path):
+                        print(f"文件 {file_path} 不包含关键字 '{Include_keyword}'，跳过加载")
+                        blank = torch.zeros((1, 64, 64, 4), dtype=torch.float32)
+                        return [], [], [], blank, "", "", 0, 0
+                    
+                    image_np = np.array(image_rgba).astype(np.float32) / 255.0
+                    image_tensor = torch.from_numpy(image_np)[None, :, :, :]
+                    
+                    # 处理文件名
+                    filename = os.path.basename(file_path)
+                    if remove_extension:
+                        filename = os.path.splitext(filename)[0]
+                    
+                    return [image_tensor], [filename], [file_path], image_tensor, filename, file_path, 0, 1
+            
+        except Exception as e:
+            print(f"出错请重置节点：{e}")
+        blank = torch.zeros((1, 64, 64, 4), dtype=torch.float32)
+        return [], [], [], blank, "", "", 0, 0
+
+
+
+
+class IO_image_select:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "indexes": ("STRING", {"default": "1,2"}),
+                "canvas_operations": (["None", "Horizontal Flip", "Vertical Flip", "90 Degree Rotation",
+                                       "180 Degree Rotation", "Horizontal Flip + 90 Degree Rotation", "Horizontal Flip + 180 Degree Rotation"], {"default": "None"}),
+                "reverse_order": ("BOOLEAN", {"default": False}),
             }
         }
     
-    RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("BOTH_STABLE",)
-    FUNCTION = "detect_double_stable"
-    CATEGORY = "Apt_Preset/flow/other"
+    CATEGORY = "Apt_Preset/IO_Port"
+    RETURN_TYPES = ("IMAGE", "IMAGE",)
+    RETURN_NAMES = ("select_img", "exclude_img")
+    FUNCTION = "SelectImages"
 
-    def _get_object_hash(self, obj):
-        try:
-            serialized = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
-            return hashlib.md5(serialized).hexdigest()
-        except:
-            return str(obj) + str(id(obj))
-
-    def _is_single_stable(self, obj, delay, cache_key):
-        current_time = time.time()
-        current_hash = self._get_object_hash(obj)
-        cache = self.object_cache[cache_key]
-
-        if not cache:
-            cache["last_hash"] = current_hash
-            cache["last_change_time"] = current_time
-            return False
-        if cache["last_hash"] != current_hash:
-            cache["last_hash"] = current_hash
-            cache["last_change_time"] = current_time
-            return False
-        return (current_time - cache["last_change_time"]) >= delay
-
-    def detect_double_stable(self, object1, object2, delay_threshold_seconds=10.0, cache_key1="obj1", cache_key2="obj2"):
-        # 分别检测两个对象是否稳定
-        obj1_stable = self._is_single_stable(object1, delay_threshold_seconds, cache_key1)
-        obj2_stable = self._is_single_stable(object2, delay_threshold_seconds, cache_key2)
-        # 仅当两个对象同时稳定时，返回True
-        both_stable = obj1_stable and obj2_stable
-        return (both_stable,)
-
-
+    DESCRIPTION = """indexes按图像索引选择输出
+    索引为：0，时，返回原输入，索引从1开始是第一张
+    索引方式：正 “1,3,5” 逆向 “-1,-3”（-1为最后一张）
+    范围方式： “2-4”
+    reverse_order为True时，输出顺序反转，如1-22变为22-1"""
     
-#endregion---------------loop team-------------
+    def parse_indexes(self, indexes_str, max_length):
+        # 此方法保持不变
+        indexes = []
+        parts = [p.strip() for p in indexes_str.split(',') if p.strip()]
+        for part in parts:
+            if '-' in part and not part.startswith('-'):
+                try:
+                    start, end = part.split('-', 1)
+                    start = int(start.strip())
+                    end = int(end.strip())
+                    start = start if start > 0 else max_length + start + 1
+                    end = end if end > 0 else max_length + end + 1
+                    if start > end:
+                        start, end = end, start
+                    start = max(1, min(start, max_length))
+                    end = max(1, min(end, max_length))
+                    indexes.extend(range(start, end + 1))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    num = int(part)
+                    if num < 0:
+                        num = max_length + num + 1
+                    if 1 <= num <= max_length:
+                        indexes.append(num)
+                except ValueError:
+                    continue
+        seen = set()
+        unique_indexes = []
+        for num in indexes:
+            if num not in seen:
+                seen.add(num)
+                unique_indexes.append(num)
+        return unique_indexes
+    
+    def SelectImages(self, images, indexes, canvas_operations, reverse_order):
+        max_length = len(images)
+        if max_length == 0:
+            return (images, [])
+
+        select_numbers = self.parse_indexes(indexes, max_length)
+
+        if not select_numbers:
+            print("Warning: No valid indexes found, return original input.")
+            return (images, [])
+
+        if reverse_order:
+            select_numbers = select_numbers[::-1]
+        
+        select_list1 = np.array(select_numbers) - 1  # 转换为0-based索引
+        exclude_list = np.setdiff1d(np.arange(max_length), select_list1)
+        print(f"Selected images (1-based): {select_numbers}")
+        
+        selected_images = images[torch.tensor(select_list1, dtype=torch.long)]
+        excluded_images = images[torch.tensor(exclude_list, dtype=torch.long)] if len(exclude_list) > 0 else []
+        
+        def apply_operation(images_tensor):
+            if not isinstance(images_tensor, torch.Tensor) or len(images_tensor) == 0:
+                return images_tensor
+            if canvas_operations == "Horizontal Flip":
+                return torch.flip(images_tensor, [2])
+            elif canvas_operations == "Vertical Flip":
+                return torch.flip(images_tensor, [1])
+            elif canvas_operations == "90 Degree Rotation":
+                return torch.rot90(images_tensor, 1, [1, 2])
+            elif canvas_operations == "180 Degree Rotation":
+                return torch.rot90(images_tensor, 2, [1, 2])
+            elif canvas_operations == "Horizontal Flip + 90 Degree Rotation":
+                flipped = torch.flip(images_tensor, [2])
+                return torch.rot90(flipped, 1, [1, 2])
+            elif canvas_operations == "Horizontal Flip + 180 Degree Rotation":
+                flipped = torch.flip(images_tensor, [2])
+                return torch.rot90(flipped, 2, [1, 2])
+            return images_tensor
+        
+        selected_images = apply_operation(selected_images)
+        excluded_images = apply_operation(excluded_images)
+        
+        return (selected_images, excluded_images)
+
+
+
+
+
+class IO_ImageSaveOverwrite:
+    def __init__(self):
+        self.type = "output"
+        self._save_counter = None
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "optional": {
+                "image": ("IMAGE", ),
+                "file_format": (["png", "webp", "jpg", "tif"],),
+                "file_names_and_path":  ("STRING", {"multiline": True,"placeholder": "输入源文件路径，生成后覆盖原图，可保持原文件结构"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("status",)
+    FUNCTION = "save_image"
+    OUTPUT_NODE = True
+    CATEGORY = "Apt_Preset/IO_Port"
+    DESCRIPTION = """
+    文件名和路径 (file_names_and_path)：输入完整的文件路径和名称
+    （如：./output/my_image 或 C:/images/folder/my_image），
+    系统会自动根据file_format参数添加相应的后缀，并创建不存在的目录。
+    """
+    def save_image(self, image, file_names_and_path, file_format):
+        if not file_names_and_path:
+            raise ValueError("file_names_and_path is empty")
+        full_path = file_names_and_path.strip()
+        dir_path = os.path.dirname(full_path)
+        base_name = os.path.basename(full_path)
+        base_name_no_ext = os.path.splitext(base_name)[0]
+        final_filename = f"{base_name_no_ext}.{file_format}"
+        if not dir_path:
+            dir_path = "./output/Apt"
+        os.makedirs(dir_path, exist_ok=True)
+        resolved_image_path = os.path.join(dir_path, final_filename)
+        self.save_images(image, resolved_image_path, file_format)
+        return (f"Overwritten: {resolved_image_path}",)
+
+    def save_images(self, images, filepath, file_format="png"):
+        directory = os.path.dirname(filepath)
+        os.makedirs(directory, exist_ok=True)
+        for i in range(images.size(0)):
+            img = 255.0 * images[i].cpu().numpy()
+            img = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
+            if file_format == "png":
+                img.save(filepath, compress_level=4)
+            elif file_format == "webp":
+                img.save(filepath, format="WEBP", quality=90)
+            elif file_format == "jpg":
+                img = img.convert("RGB")
+                img.save(filepath, format="JPEG", quality=90, optimize=True)
+            elif file_format == "tif":
+                img.save(filepath, format="TIFF")
+        return {"ui": {"images": [{"filename": os.path.basename(filepath), "subfolder": os.path.dirname(filepath), "type": self.type}]}}
+
+
+
+class IO_save_image:
+    def __init__(self):
+        self.type = "output"
+        self._save_counter = None
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+            },
+            "optional": {
+                "image": ("IMAGE", ),  # 改为可选输入
+                "file_format": (["png", "webp", "jpg", "tif"],),
+                "output_path": ("STRING", {"default": "./output/Apt", "multiline": False}),
+                "filename_mid": ("STRING", {"default": "Apt"}),
+
+                "file_names": ("STRING", {"forceInput": True}),
+                "naming_format": (
+                    [
+                        "序号",
+                        "命名+序号",
+                        "序号+命名",
+                        "命名",
+                    ],
+                    {"default": "命名+序号"}
+                ),
+                "number_digits": ("INT", {"default": 5, "min": 1, "max": 10, "step": 1}),
+                "save_workflow_as_json": ("BOOLEAN", {"default": False}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO"
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")  # 移除直通输出
+    RETURN_NAMES = ("filename", "file_path")  # 移除直通输出名称
+    FUNCTION = "save_image"
+    OUTPUT_NODE = True
+    CATEGORY = "Apt_Preset/IO_Port"
+    DESCRIPTION = """
+    文件名称 (file_names)：可输入单个文件名或用\n分隔的多个文件名（支持List:前缀及- 引导格式）。
+    若提供，优先按此命名图像；否则按命名规则生成文件名。
+
+    序号位数 (number_digits)：默认5，设置序号数字位数。如果命名方式不包含序号，则忽略此设置。
+    输出路径 (output_path)，确保路径有效，如果不存在，则自动创建。
+    
+    注意：如果未提供图像输入，节点将不执行保存操作。
+    """
+
+    @staticmethod
+    def find_highest_numeric_value(directory, filename_mid):
+        highest_value = -1
+        if not os.path.exists(directory):
+            return highest_value
+        
+        for filename in os.listdir(directory):
+            try:
+                name_part = filename.split('.')[0]
+                parts = name_part.split('_')
+                for part in reversed(parts):
+                    if part.isdigit() and len(part) >= 3:
+                        numeric_value = int(part)
+                        if numeric_value > highest_value:
+                            highest_value = numeric_value
+                        break
+                
+                if highest_value == -1:
+                    numeric_parts = re.findall(r'\d+', filename)
+                    if numeric_parts:
+                        valid_parts = [p for p in numeric_parts if len(p) < 8]
+                        if valid_parts:
+                            longest_num = max(valid_parts, key=len)
+                            numeric_value = int(longest_num)
+                            if numeric_value > highest_value:
+                                highest_value = numeric_value
+            except (ValueError, AttributeError):
+                continue
+        
+        return highest_value
+
+    def save_image(self, file_format="png", filename_mid="Apt", output_path="", naming_format="命名+序号", number_digits=5,
+                   save_workflow_as_json=False, prompt=None, extra_pnginfo=None, file_names=None, image=None):
+
+        if image is None:
+            # 如果没有输入图像，只返回空值
+            return ("", "")
+
+        if isinstance(output_path, str):
+            output_path = output_path.strip()
+            if (output_path.startswith('"') and output_path.endswith('"')) or \
+               (output_path.startswith("'") and output_path.endswith("'")):
+                output_path = output_path[1:-1].strip()
+
+        if isinstance(image, list):
+            if len(image) > 0:
+                first_shape = image[0].shape
+                shapes_match = all(img.shape == first_shape for img in image)
+                
+                if shapes_match:
+                    image = np.concatenate(image, axis=0)
+                    batch_size = image.shape[0]
+                    images_list = [image[i:i + 1, ...] for i in range(batch_size)]
+                else:
+                    images_list = image
+                    batch_size = len(images_list)
+            else:
+                images_list = image
+                batch_size = len(images_list)
+        else:
+            batch_size = image.shape[0]
+            images_list = [image[i:i + 1, ...] for i in range(batch_size)]
+        
+        output_dir = './output'
+        output_paths = []
+
+        if isinstance(output_path, list):
+            if len(output_path) == batch_size:
+                for path in output_path:
+                    path = path.strip()
+                    if (path.startswith('"') and path.endswith('"')) or \
+                       (path.startswith("'") and path.endswith("'")):
+                        path = path[1:-1].strip()
+                    os.makedirs(path, exist_ok=True)
+                output_paths = output_path
+            else:
+                print(f"output_path列表长度({len(output_path)})与图片数量({batch_size})不匹配，使用默认路径")
+                output_paths = [output_dir] * batch_size
+        else:
+            os.makedirs(output_path, exist_ok=True)
+            output_paths = [output_path] * batch_size
+
+        use_original_names = file_names is not None and len(file_names) > 0
+        parsed_file_names = []
+        if use_original_names:
+            if isinstance(file_names, str):
+                if file_names.startswith("List:") or "\n" in file_names:
+                    lines = file_names.strip().split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line == "List:" or line == "":
+                            continue
+                        if line.startswith("- "):
+                            line = line[2:].strip()
+                        if line:
+                            parsed_file_names.append(line)
+                else:
+                    parsed_file_names = [file_names]
+            elif isinstance(file_names, list):
+                parsed_file_names = file_names
+
+        use_original_names = len(parsed_file_names) > 0
+        base_dir = output_paths[0]
+        final_output_filename = ""
+        final_file_path = ""
+
+        if self._save_counter is None:
+            existing_counters = []
+            if os.path.exists(base_dir):
+                for filename in os.listdir(base_dir):
+                    name_part = os.path.splitext(filename)[0]
+                    num_parts = re.findall(r'\d+', name_part)
+                    for num in num_parts:
+                        try:
+                            existing_counters.append(int(num))
+                        except ValueError:
+                            continue
+            self._save_counter = max(existing_counters) + 1 if existing_counters else 1
+
+        for idx, img_tensor in enumerate(images_list):
+            if hasattr(img_tensor, 'cpu'):
+                output_image = img_tensor.cpu().numpy()
+            else:
+                output_image = img_tensor if isinstance(img_tensor, np.ndarray) else np.array(img_tensor)
+            
+            if output_image.ndim == 4:
+                img_np = np.clip(output_image * 255.0, 0, 255).astype(np.uint8)
+                img = Image.fromarray(img_np[0])
+            elif output_image.ndim == 3:
+                img_np = np.clip(output_image * 255.0, 0, 255).astype(np.uint8)
+                img = Image.fromarray(img_np)
+            else:
+                raise ValueError(f"不支持的图像维度: {output_image.shape}")
+            
+            out_path = output_paths[idx]
+
+            if use_original_names and idx < len(parsed_file_names):
+                output_filename = os.path.splitext(parsed_file_names[idx])[0]
+            else:
+                numbering = f"{self._save_counter:0{number_digits}d}"
+                
+                if naming_format == "序号":
+                    output_filename = numbering
+                elif naming_format == "命名+序号":
+                    output_filename = f"{filename_mid}{numbering}"
+                elif naming_format == "序号+命名":
+                    output_filename = f"{numbering}{filename_mid}"
+                elif naming_format == "命名":
+                    output_filename = filename_mid
+                else:
+                    output_filename = f"{filename_mid}{numbering}"
+                
+                self._save_counter += 1
+
+            resolved_image_path = os.path.join(out_path, f"{output_filename}.{file_format}")
+
+            final_filename = output_filename
+            if naming_format != "命名":
+                unique_counter = 1
+                while os.path.exists(resolved_image_path):
+                    final_filename = f"{output_filename}_{unique_counter}"
+                    resolved_image_path = os.path.join(out_path, f"{final_filename}.{file_format}")
+                    unique_counter += 1
+                    if unique_counter > 100:
+                        break
+
+            final_output_filename = final_filename
+            final_file_path = os.path.abspath(resolved_image_path)
+
+            img_params = {
+                'png': {'compress_level': 4},
+                'webp': {'method': 6, 'lossless': False, 'quality': 80},
+                'jpg': {'quality': 95, 'format': 'JPEG'},
+                'tif': {'format': 'TIFF'}
+            }
+            img.save(resolved_image_path, **img_params[file_format])
+
+            if save_workflow_as_json:
+                try:
+                    workflow = (extra_pnginfo or {}).get('workflow')
+                    if workflow is not None:
+                        json_file_path = os.path.join(out_path, f"{final_filename}.json")
+                        with open(json_file_path, 'w') as f:
+                            json.dump(workflow, f)
+                except Exception as e:
+                    print(f"Failed to save workflow JSON: {e}")
+
+            time.sleep(0.01)
+
+        return (final_output_filename, final_file_path)
+
+
+
+
+class IO_LoadTextBatch:
+    INPUT_IS_LIST = True
+    _last_pushed_hash_by_node: dict = {}
+    _last_import_hash_by_node: dict = {}
+
+    def _first_scalar(self, v, default=None):
+        if isinstance(v, list):
+            return v[0] if len(v) > 0 else default
+        return v
+
+    def _parse_text_list(self, raw):
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            out = []
+            for e in raw:
+                out.extend(self._parse_text_list(e))
+            return out
+        s = str(raw)
+        st = s.strip()
+        if st == "":
+            return []
+        if st.startswith("[") and st.endswith("]"):
+            try:
+                v = json.loads(s)
+                if isinstance(v, list):
+                    out = []
+                    for x in v:
+                        if x is None:
+                            continue
+                        line = str(x).strip()
+                        if line != "":
+                            out.append(line)
+                    return out
+            except Exception:
+                pass
+        out = []
+        for line in s.splitlines():
+            t = str(line).strip()
+            if t != "":
+                out.append(t)
+        return out
+
+    def _parse_text_list_in(self, raw):
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            out = []
+            for e in raw:
+                out.extend(self._parse_text_list_in(e))
+            return out
+        s = str(raw)
+        st = s.strip()
+        if st == "":
+            return []
+        if st.startswith("[") and st.endswith("]"):
+            try:
+                v = json.loads(s)
+                if isinstance(v, list):
+                    out = []
+                    for x in v:
+                        if x is None:
+                            continue
+                        t = str(x).strip()
+                        if t != "":
+                            out.append(t)
+                    return out
+            except Exception:
+                pass
+        return [st]
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "text_list": ("STRING", {"multiline": True, "default": ""}),
+                "card_size": ("INT", {"default": 120, "min": 120, "max": 520, "step": 20}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1}),
+            },
+            "optional": {
+                "text_list_in": ("STRING", {"forceInput": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    NAME = "IO_LoadTextBatch"
+    CATEGORY = "Apt_Preset/IO_Port/batch_input"
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("text_list", "text_index", "index", "total")
+    FUNCTION = "load_text_list"
+    OUTPUT_IS_LIST = (True, False, False, False)
+    OUTPUT_NODE = True
+
+    def load_text_list(self, text_list: str, card_size: int = 120, index: int = 0, text_list_in=None, unique_id: str = ""):
+        text_list = self._first_scalar(text_list, "")
+        card_size = self._first_scalar(card_size, 120)
+        index = self._first_scalar(index, 0)
+        unique_id = self._first_scalar(unique_id, "")
+        uid = str(unique_id) if unique_id is not None else ""
+        local_texts = self._parse_text_list(text_list)
+        needs_frontend_resync = False
+
+        texts = local_texts
+        if text_list_in is not None:
+            incoming_texts = self._parse_text_list_in(text_list_in)
+            incoming_hash = hashlib.sha256(
+                json.dumps(incoming_texts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            last_in_hash = self._last_import_hash_by_node.get(uid) if uid else None
+
+            should_import = False
+            if len(local_texts) == 0:
+                should_import = True
+            elif uid and last_in_hash != incoming_hash:
+                should_import = True
+            elif local_texts == incoming_texts:
+                should_import = True
+
+            if should_import:
+                texts = incoming_texts
+                if local_texts != incoming_texts:
+                    needs_frontend_resync = True
+            if uid:
+                self._last_import_hash_by_node[uid] = incoming_hash
+
+        total = len(texts)
+        if total == 0:
+            return ([], "", 0, 0)
+
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        if i < 0:
+            i = 0
+        if i >= total:
+            i = total - 1
+
+        if unique_id:
+            try:
+                uid = str(unique_id)
+                payload = {"items": texts, "index": int(i), "card_size": int(card_size)}
+                h = hashlib.sha256(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if needs_frontend_resync or self._last_pushed_hash_by_node.get(uid) != h:
+                    self._last_pushed_hash_by_node[uid] = h
+                    ps = getattr(PromptServer, "instance", None)
+                    if ps is not None and hasattr(ps, "send_sync"):
+                        ps.send_sync("IO_LoadTextBatch_set", {"node": uid, **payload})
+            except Exception:
+                pass
+
+        return (texts, str(texts[i]), int(i), int(total))
+
+    @classmethod
+    def IS_CHANGED(s, text_list: str, card_size: int = 120, index: int = 0, text_list_in=None, unique_id=None, **kwargs):
+        _ = (unique_id, kwargs)
+        m = hashlib.sha256()
+        if isinstance(text_list, list):
+            text_list = text_list[0] if len(text_list) > 0 else ""
+        if isinstance(index, list):
+            index = index[0] if len(index) > 0 else 0
+        if isinstance(card_size, list):
+            card_size = card_size[0] if len(card_size) > 0 else 120
+        m.update((str(text_list) if text_list is not None else "").encode("utf-8"))
+        if text_list_in is not None:
+            if isinstance(text_list_in, list):
+                flat = []
+
+                def _flatten(v):
+                    if isinstance(v, list):
+                        for x in v:
+                            _flatten(x)
+                    else:
+                        t = str(v).strip()
+                        if t != "":
+                            flat.append(t)
+
+                _flatten(text_list_in)
+                m.update(json.dumps(flat, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            else:
+                m.update(str(text_list_in).encode("utf-8"))
+        m.update(str(index).encode("utf-8"))
+        m.update(str(card_size).encode("utf-8"))
+        return m.digest().hex()
+
+    @classmethod
+    def VALIDATE_INPUTS(s, text_list: str, card_size: int = 120, index: int = 0, text_list_in=None):
+        return True
+
+
+class IO_LoadImgBatch:
+    INPUT_IS_LIST = True
+    _last_pushed_hash_by_node: dict = {}
+    _tensor_cache_by_node: dict = {}
+
+    def _first_scalar(self, v, default=None):
+        if isinstance(v, list):
+            return v[0] if len(v) > 0 else default
+        return v
+
+    def _split_image_tensor(self, t):
+        if not isinstance(t, torch.Tensor):
+            return []
+        try:
+            if t.dim() == 4 and int(t.shape[0]) > 1:
+                return [t[i : i + 1] for i in range(int(t.shape[0]))]
+            if t.dim() == 3:
+                return [t.unsqueeze(0)]
+            return [t]
+        except Exception:
+            return [t]
+
+    def _import_from_image(self, import_image, existing_names: list):
+        if import_image is None:
+            return []
+        tensors = []
+        try:
+            if isinstance(import_image, list):
+                for e in import_image:
+                    if isinstance(e, torch.Tensor):
+                        tensors.extend(self._split_image_tensor(e))
+                if len(tensors) == 0:
+                    return []
+            elif isinstance(import_image, torch.Tensor):
+                tensors = self._split_image_tensor(import_image)
+        except Exception:
+            tensors = []
+        if len(tensors) == 0:
+            return []
+
+        input_dir = folder_paths.get_input_directory()
+        existing_set = {str(x).lower() for x in (existing_names or [])}
+        imported = []
+        for t in tensors:
+            try:
+                img = t.detach().cpu()
+            except Exception:
+                img = t
+            try:
+                if img.dim() == 4:
+                    img = img[0]
+                frame_np = np.clip(255.0 * img.numpy(), 0, 255).astype(np.uint8)
+                h = hashlib.sha256(frame_np.tobytes()).hexdigest()[:12]
+                base = f"io_loadimg_{h}.png"
+                if base.lower() in existing_set:
+                    continue
+                dst_path = os.path.join(input_dir, base)
+                if not os.path.exists(dst_path):
+                    Image.fromarray(frame_np).save(dst_path, format="PNG", optimize=True)
+                imported.append(base)
+                existing_set.add(base.lower())
+            except Exception:
+                continue
+        return imported
+
+    def _load_tensor_from_name(self, name: str):
+        if not name or not folder_paths.exists_annotated_filepath(name):
+            return None
+        try:
+            image_path = folder_paths.get_annotated_filepath(name)
+            img = node_helpers.pillow(Image.open, image_path)
+        except Exception:
+            return None
+
+        w, h = None, None
+        frames = []
+        excluded_formats = ["MPO"]
+        try:
+            for i in ImageSequence.Iterator(img):
+                i = node_helpers.pillow(ImageOps.exif_transpose, i)
+                if i.mode == "I":
+                    i = i.point(lambda p: p * (1 / 255))
+                pil_image = i.convert("RGB")
+                if len(frames) == 0:
+                    w = pil_image.size[0]
+                    h = pil_image.size[1]
+                if pil_image.size[0] != w or pil_image.size[1] != h:
+                    continue
+                arr = np.array(pil_image).astype(np.float32) / 255.0
+                tensor = torch.from_numpy(arr)[None,]
+                frames.append(tensor)
+        except Exception:
+            frames = []
+        if len(frames) == 0:
+            return None
+        if len(frames) > 1 and getattr(img, "format", None) not in excluded_formats:
+            return torch.cat(frames, dim=0)
+        return frames[0]
+
+    def _load_tensor_cached(self, node_uid: str, name: str):
+        if not node_uid:
+            return self._load_tensor_from_name(name)
+        try:
+            image_path = folder_paths.get_annotated_filepath(name)
+            mtime = os.path.getmtime(image_path)
+            fsize = os.path.getsize(image_path)
+        except Exception:
+            return self._load_tensor_from_name(name)
+
+        cache = self._tensor_cache_by_node.setdefault(str(node_uid), {})
+        key = str(image_path)
+        try:
+            ent = cache.get(key)
+            if ent and ent[0] == mtime and ent[1] == fsize and isinstance(ent[2], torch.Tensor):
+                return ent[2]
+        except Exception:
+            ent = None
+
+        t = self._load_tensor_from_name(name)
+        if isinstance(t, torch.Tensor):
+            cache[key] = (mtime, fsize, t)
+            while len(cache) > 8:
+                try:
+                    cache.pop(next(iter(cache)))
+                except Exception:
+                    break
+        return t
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_list": ("STRING", {"multiline": True, "default": ""}),
+                "card_size": ("INT", {"default": 64, "min": 64, "max": 384, "step": 1}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1}),
+            },
+            "optional": {
+                "image_list_in": ("IMAGE", {"forceInput": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    NAME = "IO_LoadImgBatch"
+    CATEGORY = "Apt_Preset/IO_Port/batch_input"
+    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "INT", "INT")
+    RETURN_NAMES = ("img_list", "img_index", "name_index", "index", "total")
+    FUNCTION = "load_img_batch"
+    OUTPUT_IS_LIST = (True, False, False, False, False)
+    OUTPUT_NODE = True
+
+    def load_img_batch(self, image_list: str, card_size: int = 120, index: int = 0, image_list_in=None, unique_id: str = ""):
+        image_list = self._first_scalar(image_list, "")
+        card_size = self._first_scalar(card_size, 64)
+        index = self._first_scalar(index, 0)
+        unique_id = self._first_scalar(unique_id, "")
+
+        names = [x.strip() for x in str(image_list or "").splitlines()]
+        names = [x for x in names if x]
+
+        if image_list_in is not None:
+            imported = self._import_from_image(image_list_in, existing_names=names)
+            if imported:
+                names.extend(imported)
+
+        valid_names = []
+        for n in names:
+            try:
+                if folder_paths.exists_annotated_filepath(n):
+                    valid_names.append(n)
+            except Exception:
+                continue
+        names = valid_names
+
+        total = len(names)
+        blank = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        if total == 0:
+            return ([], blank, "", 0, 0)
+
+        # 加载所有图片到列表
+        all_images = []
+        for name in names:
+            t = self._load_tensor_cached(str(unique_id), name) if unique_id else self._load_tensor_from_name(name)
+            if isinstance(t, torch.Tensor):
+                all_images.append(t)
+            else:
+                all_images.append(blank)
+
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        if i < 0:
+            i = 0
+        if i >= total:
+            i = total - 1
+
+        t = self._load_tensor_cached(str(unique_id), names[i]) if unique_id else self._load_tensor_from_name(names[i])
+        output_image = t if isinstance(t, torch.Tensor) else blank
+
+        if unique_id:
+            try:
+                uid = str(unique_id)
+                payload = {"items": names, "index": int(i), "card_size": int(card_size)}
+                h = hashlib.sha256(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if self._last_pushed_hash_by_node.get(uid) != h:
+                    self._last_pushed_hash_by_node[uid] = h
+                    ps = getattr(PromptServer, "instance", None)
+                    if ps is not None and hasattr(ps, "send_sync"):
+                        ps.send_sync("IO_LoadImgBatch_set", {"node": uid, **payload})
+            except Exception:
+                pass
+
+        # 获取当前索引对应的文件名（不含扩展名）
+        current_name = names[i] if i < len(names) else ""
+        name_without_ext = os.path.splitext(current_name)[0] if current_name else ""
+
+        return (all_images, output_image, name_without_ext, int(i), int(total))
+
+    @classmethod
+    def IS_CHANGED(s, image_list: str, card_size: int = 120, index: int = 0, image_list_in=None):
+        m = hashlib.sha256()
+        if isinstance(image_list, list):
+            image_list = image_list[0] if len(image_list) > 0 else ""
+        if isinstance(index, list):
+            index = index[0] if len(index) > 0 else 0
+        if isinstance(card_size, list):
+            card_size = card_size[0] if len(card_size) > 0 else 120
+
+        m.update((str(image_list) if image_list is not None else "").encode("utf-8"))
+        m.update(str(index).encode("utf-8"))
+        m.update(str(card_size).encode("utf-8"))
+        if image_list_in is not None:
+            try:
+                if isinstance(image_list_in, list):
+                    m.update(str(len(image_list_in)).encode("utf-8"))
+                else:
+                    m.update(b"1")
+            except Exception:
+                pass
+        return m.digest().hex()
+
+    @classmethod
+    def VALIDATE_INPUTS(s, image_list: str, card_size: int = 120, index: int = 0, image_list_in=None):
+        return True
+
+
+class _IO_LoadMediaBatchBase:
+    INPUT_IS_LIST = True
+    _last_pushed_hash_by_node: dict = {}
+
+    EXTENSIONS = ()
+    EVENT_NAME = ""
+    LIST_NAME = "media_list"
+    INDEX_NAME = "media_index"
+    NODE_NAME = "IO_LoadMediaBatch"
+
+    def _first_scalar(self, v, default=None):
+        if isinstance(v, list):
+            return v[0] if len(v) > 0 else default
+        return v
+
+    def _normalize_line_list(self, raw_text: str):
+        lines = [x.strip() for x in str(raw_text or "").splitlines()]
+        return [x for x in lines if x]
+
+    def _resolve_media_path(self, raw_path: str):
+        if not raw_path:
+            return None
+        p = str(raw_path).strip().strip('"').strip("'")
+        if not p:
+            return None
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+        p2 = os.path.join(folder_paths.get_input_directory(), p)
+        if os.path.isfile(p2):
+            return os.path.abspath(p2)
+        p3 = os.path.join(folder_paths.get_input_directory(), os.path.basename(p))
+        if os.path.isfile(p3):
+            return os.path.abspath(p3)
+        return None
+
+    def _is_valid_ext(self, path: str):
+        if not self.EXTENSIONS:
+            return True
+        ext = os.path.splitext(path)[1].lower()
+        return ext in self.EXTENSIONS
+
+    def _import_from_input_list(self, media_list_in, existing_paths: list):
+        if media_list_in is None:
+            return []
+        out = []
+        existing_set = {str(x).lower() for x in (existing_paths or [])}
+        values = media_list_in if isinstance(media_list_in, list) else [media_list_in]
+        for item in values:
+            candidate = None
+            if isinstance(item, str):
+                candidate = item
+            elif isinstance(item, (list, tuple)):
+                for v in item:
+                    if isinstance(v, str):
+                        resolved = self._resolve_media_path(v)
+                        if resolved and self._is_valid_ext(resolved):
+                            low = resolved.lower()
+                            if low not in existing_set:
+                                out.append(resolved)
+                                existing_set.add(low)
+                continue
+            if candidate:
+                resolved = self._resolve_media_path(candidate)
+                if resolved and self._is_valid_ext(resolved):
+                    low = resolved.lower()
+                    if low not in existing_set:
+                        out.append(resolved)
+                        existing_set.add(low)
+        return out
+
+    def _filter_valid_names(self, names: list):
+        valid = []
+        for n in names:
+            resolved = self._resolve_media_path(n)
+            if resolved and self._is_valid_ext(resolved):
+                valid.append(resolved)
+        return valid
+
+    def _emit_ui_sync(self, unique_id: str, names: list, index: int, card_size: int):
+        if not unique_id or not self.EVENT_NAME:
+            return
+        try:
+            uid = str(unique_id)
+            payload = {"items": names, "index": int(index), "card_size": int(card_size)}
+            h = hashlib.sha256(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if self._last_pushed_hash_by_node.get(uid) == h:
+                return
+            self._last_pushed_hash_by_node[uid] = h
+            ps = getattr(PromptServer, "instance", None)
+            if ps is not None and hasattr(ps, "send_sync"):
+                ps.send_sync(self.EVENT_NAME, {"node": uid, **payload})
+        except Exception:
+            pass
+
+    @classmethod
+    def IS_CHANGED(cls, media_list: str = "", card_size: int = 120, index: int = 0, media_list_in=None, **_kwargs):
+        m = hashlib.sha256()
+        if isinstance(media_list, list):
+            media_list = media_list[0] if len(media_list) > 0 else ""
+        if isinstance(index, list):
+            index = index[0] if len(index) > 0 else 0
+        if isinstance(card_size, list):
+            card_size = card_size[0] if len(card_size) > 0 else 120
+        m.update((str(media_list) if media_list is not None else "").encode("utf-8"))
+        m.update(str(index).encode("utf-8"))
+        m.update(str(card_size).encode("utf-8"))
+        if media_list_in is not None:
+            try:
+                if isinstance(media_list_in, list):
+                    m.update(str(len(media_list_in)).encode("utf-8"))
+                else:
+                    m.update(b"1")
+            except Exception:
+                pass
+        return m.digest().hex()
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, media_list: str = "", card_size: int = 120, index: int = 0, media_list_in=None, **_kwargs):
+        return True
+
+
+class IO_LoadVideoBatch(_IO_LoadMediaBatchBase):
+    EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+    EVENT_NAME = "IO_LoadVideoBatch_set"
+    NODE_NAME = "IO_LoadVideoBatch"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video_list": ("STRING", {"multiline": True, "default": ""}),
+                "card_size": ("INT", {"default": 64, "min": 64, "max": 384, "step": 1}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1}),
+            },
+            "optional": {
+                "video_list_in": ("STRING", {"forceInput": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    NAME = "IO_LoadVideoBatch"
+    CATEGORY = "Apt_Preset/IO_Port/batch_input"
+    RETURN_TYPES = ("STRING", "VIDEO", "STRING", "INT", "INT")
+    RETURN_NAMES = ("video_list", "video_index", "name_index", "index", "total")
+    FUNCTION = "load_video_batch"
+    OUTPUT_IS_LIST = (True, False, False, False, False)
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, video_list: str = "", card_size: int = 120, index: int = 0, video_list_in=None, **kwargs):
+        return super().IS_CHANGED(video_list, card_size, index, video_list_in, **kwargs)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, video_list: str = "", card_size: int = 120, index: int = 0, video_list_in=None, **kwargs):
+        return super().VALIDATE_INPUTS(video_list, card_size, index, video_list_in, **kwargs)
+
+    def _build_video_from_file(self, path: str):
+        if not path or not os.path.isfile(path):
+            return None
+        impl = _ComfyInputImpl
+        if impl is None:
+            return None
+        try:
+            vff = getattr(impl, "VideoFromFile", None)
+            if vff is None:
+                return None
+            return vff(path)
+        except Exception:
+            return None
+
+    def load_video_batch(self, video_list: str, card_size: int = 120, index: int = 0, video_list_in=None, unique_id: str = ""):
+        video_list = self._first_scalar(video_list, "")
+        card_size = self._first_scalar(card_size, 64)
+        index = self._first_scalar(index, 0)
+        unique_id = self._first_scalar(unique_id, "")
+
+        names = self._normalize_line_list(video_list)
+        imported = self._import_from_input_list(video_list_in, existing_paths=names)
+        if imported:
+            names.extend(imported)
+        names = self._filter_valid_names(names)
+
+        total = len(names)
+        if total == 0:
+            return ([], None, "", 0, 0)
+
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        i = max(0, min(i, total - 1))
+        current_path = names[i]
+        name_without_ext = os.path.splitext(os.path.basename(current_path))[0] if current_path else ""
+
+        video_obj = self._build_video_from_file(current_path)
+
+        self._emit_ui_sync(str(unique_id), names, i, int(card_size))
+        return (names, video_obj, name_without_ext, int(i), int(total))
+
+
+class IO_LoadAudioBatch(_IO_LoadMediaBatchBase):
+    EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+    EVENT_NAME = "IO_LoadAudioBatch_set"
+    NODE_NAME = "IO_LoadAudioBatch"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "audio_list": ("STRING", {"multiline": True, "default": ""}),
+                "card_size": ("INT", {"default": 64, "min": 64, "max": 384, "step": 1}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1}),
+            },
+            "optional": {
+                "audio_list_in": ("STRING", {"forceInput": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    NAME = "IO_LoadAudioBatch"
+    CATEGORY = "Apt_Preset/IO_Port/batch_input"
+    RETURN_TYPES = ("STRING", "AUDIO", "STRING", "INT", "INT")
+    RETURN_NAMES = ("audio_list", "audio_index", "name_index", "index", "total")
+    FUNCTION = "load_audio_batch"
+    OUTPUT_IS_LIST = (True, False, False, False, False)
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, audio_list: str = "", card_size: int = 120, index: int = 0, audio_list_in=None, **kwargs):
+        return super().IS_CHANGED(audio_list, card_size, index, audio_list_in, **kwargs)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, audio_list: str = "", card_size: int = 120, index: int = 0, audio_list_in=None, **kwargs):
+        return super().VALIDATE_INPUTS(audio_list, card_size, index, audio_list_in, **kwargs)
+
+    def _build_audio_from_file(self, path: str):
+        if not path or not os.path.isfile(path):
+            return None
+        if not SOUNDFILE_AVAILABLE or _sf is None:
+            return None
+        try:
+            data, sr = _sf.read(path, always_2d=True)  # shape: [T, C], float32/float64/int16...
+            if not isinstance(data, np.ndarray) or data.size == 0:
+                return None
+            if data.ndim == 1:
+                data = data[:, None]
+            # normalize dtype to float32 in [-1, 1]
+            if np.issubdtype(data.dtype, np.integer):
+                info = np.iinfo(data.dtype)
+                scale = max(1.0, float(info.max))
+                waveform = data.astype(np.float32) / scale
+            else:
+                waveform = data.astype(np.float32)
+            # ComfyUI AUDIO: torch.Tensor [B, C, T]
+            tensor = torch.from_numpy(waveform.T).contiguous().unsqueeze(0)  # [1, C, T]
+            return {"waveform": tensor, "sample_rate": int(sr)}
+        except Exception:
+            return None
+
+    def load_audio_batch(self, audio_list: str, card_size: int = 120, index: int = 0, audio_list_in=None, unique_id: str = ""):
+        audio_list = self._first_scalar(audio_list, "")
+        card_size = self._first_scalar(card_size, 64)
+        index = self._first_scalar(index, 0)
+        unique_id = self._first_scalar(unique_id, "")
+
+        names = self._normalize_line_list(audio_list)
+        imported = self._import_from_input_list(audio_list_in, existing_paths=names)
+        if imported:
+            names.extend(imported)
+        names = self._filter_valid_names(names)
+
+        total = len(names)
+        if total == 0:
+            return ([], None, "", 0, 0)
+
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        i = max(0, min(i, total - 1))
+        current_path = names[i]
+        name_without_ext = os.path.splitext(os.path.basename(current_path))[0] if current_path else ""
+
+        audio_obj = self._build_audio_from_file(current_path)
+
+        self._emit_ui_sync(str(unique_id), names, i, int(card_size))
+        return (names, audio_obj, name_without_ext, int(i), int(total))
+
+
+def _resolve_media_preview_path(raw_path: str):
+    if not raw_path:
+        return None
+    p = str(raw_path).strip().strip('"').strip("'")
+    if not p:
+        return None
+    if os.path.isfile(p):
+        return os.path.abspath(p)
+    input_dir = folder_paths.get_input_directory()
+    p2 = os.path.join(input_dir, p)
+    if os.path.isfile(p2):
+        return os.path.abspath(p2)
+    p3 = os.path.join(input_dir, os.path.basename(p))
+    if os.path.isfile(p3):
+        return os.path.abspath(p3)
+    return None
+
+
+@routes.get("/Apt_Preset_IO_LoadMedia_preview")
+async def apt_preset_io_load_media_preview(request):
+    raw_path = request.query.get("path", "")
+    resolved = _resolve_media_preview_path(raw_path)
+    if not resolved or not os.path.exists(resolved):
+        return web.Response(status=404, text="media not found")
+    mime = mimetypes.guess_type(resolved)[0] or "application/octet-stream"
+    return web.FileResponse(resolved, headers={"Content-Type": mime})
+
+
+@routes.post("/Apt_Preset_IO_LoadMedia_upload")
+async def apt_preset_io_load_media_upload(request):
+    media_type = str(request.query.get("media_type", "")).lower().strip()
+    if media_type == "audio":
+        allowed_exts = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+    else:
+        allowed_exts = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+
+    saved_items = []
+    try:
+        reader = await request.multipart()
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"multipart 解析失败: {e}"}, status=400)
+
+    input_dir = folder_paths.get_input_directory()
+    os.makedirs(input_dir, exist_ok=True)
+
+    while True:
+        part = await reader.next()
+        if part is None:
+            break
+        if part.name != "media":
+            continue
+        filename = os.path.basename(part.filename or "").strip()
+        if not filename:
+            continue
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in allowed_exts:
+            continue
+
+        stem = re.sub(r"[^a-zA-Z0-9_\-\u4e00-\u9fff]+", "_", os.path.splitext(filename)[0])[:64] or "media"
+        base_name = f"{stem}{ext}"
+        save_path = os.path.join(input_dir, base_name)
+        if os.path.exists(save_path):
+            save_path = os.path.join(input_dir, f"{stem}_{int(time.time() * 1000)}{ext}")
+
+        try:
+            with open(save_path, "wb") as f:
+                while True:
+                    chunk = await part.read_chunk()
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            saved_items.append(os.path.basename(save_path))
+        except Exception:
+            continue
+
+    return web.json_response({"ok": True, "items": saved_items})
+
+
+
+#region-------------view_bridge_image------------------
+
+import os
+import torch
+import numpy as np
+from PIL import Image, ImageOps, ImageSequence
+import folder_paths
+import node_helpers
+
+def tensor_to_hash(tensor):
+    return hash(tuple(tensor.cpu().numpy().ravel()[:1000]))
+
+def tensor2pil(image):
+    img_np = np.clip(255. * image.cpu().numpy(), 0, 255).astype(np.uint8)
+    if len(img_np.shape) == 4:img_np = img_np[0]
+    while len(img_np.shape) > 3:img_np = img_np.squeeze(0)
+    return Image.fromarray(img_np)
+
+def create_temp_file(image):
+    import tempfile
+    temp_dir = folder_paths.get_temp_directory()
+    temp_path = os.path.join(temp_dir, f"temp_{hash(image)}.png")
+    img = tensor2pil(image)
+    img.save(temp_path, format='PNG')
+    return temp_path, [{"filename": os.path.basename(temp_path), "subfolder": "", "type": "temp"}]
+
+
+
+
+
+class view_bridge_image:   
+    def __init__(self):
+        self.image_id = None
+        self.cached_mask = None  
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",)
+            },
+            "optional": {
+                "mask": ("MASK",), 
+                "output_mask": ("BOOLEAN", {"default": False, "label_off": "Refresh Mask", "label_on": "Store Mask"}),  
+                "operation": (["+", "-", "*", "&", "None"], {"default": "+"}),
+                "image_update": ("IMAGE_FILE",),  
+
+            }
+        }
+
+    CATEGORY = "Apt_Preset/PreView"
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("image", "mask")
+    FUNCTION = "edit"
+    OUTPUT_NODE = True
+    NAME = "view_bridge_image"
+
+    def edit(self, image, mask=None, operation="None", image_update=None, output_mask=False):
+        if self.image_id is None:
+            self.image_id = tensor_to_hash(image)
+            image_update = None
+        else:
+            image_id = tensor_to_hash(image)
+            if image_id != self.image_id:
+                image_update = None
+                self.image_id = image_id
+                # 图像ID变化时重置缓存遮罩
+                if not output_mask:
+                    self.cached_mask = None
+
+        # 优先使用 image_update 中的图像
+        if image_update is not None and 'images' in image_update:
+            images = image_update['images']
+            filename = images[0]['filename']
+            subfolder = images[0]['subfolder']
+            type = images[0]['type']
+            name, base_dir = folder_paths.annotated_filepath(filename)
+
+            if type.endswith("output"):
+                base_dir = folder_paths.get_output_directory()
+            elif type.endswith("input"):
+                base_dir = folder_paths.get_input_directory()
+            elif type.endswith("temp"):
+                base_dir = folder_paths.get_temp_directory()
+
+            image_path = os.path.join(base_dir, subfolder, name)
+            img = node_helpers.pillow(Image.open, image_path)
+        else:
+            # 否则使用 preview_image
+            if mask is not None:
+                try:
+                    masked_result = generate_masked_black_image(image, mask)
+                    preview_image = masked_result["result"][0]
+                except Exception as e:
+                    print(f"[Error] Failed to apply mask for preview: {e}")
+                    preview_image = image
+            else:
+                preview_image = image
+
+            image_path, images = create_temp_file(preview_image)
+            img = node_helpers.pillow(Image.open, image_path)
+
+        # 从图像中提取 mask
+        output_masks = []
+        w, h = None, None
+        excluded_formats = ['MPO']
+
+        for i in ImageSequence.Iterator(img):
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+            if i.mode == 'I':
+                i = i.point(lambda i: i * (1 / 255))
+            image_pil = i.convert("RGB")
+
+            if len(output_masks) == 0:
+                w = image_pil.size[0]
+                h = image_pil.size[1]
+
+            if image_pil.size[0] != w or image_pil.size[1] != h:
+                continue
+
+            if 'A' in i.getbands():
+                mask_np = np.array(i.getchannel('A')).astype(np.float32) / 255.0
+                mask_tensor = 1. - torch.from_numpy(mask_np)
+            else:
+                mask_tensor = torch.zeros((h, w), dtype=torch.float32, device="cpu")
+
+            output_masks.append(mask_tensor.unsqueeze(0))
+
+        if len(output_masks) > 1 and img.format not in excluded_formats:
+            output_mask_val = torch.cat(output_masks, dim=0)
+        else:
+            output_mask_val = output_masks[0] if output_masks else torch.zeros_like(image[0, :, :, 0])
+
+        # 新增 Mask 运算逻辑
+        mask1 = mask
+        mask2 = output_mask_val
+
+        # 计算当前运算结果
+        if mask1 is None or operation == "None":
+            current_result = mask2
+        else:
+            invert_mask1 = False
+            invert_mask2 = False
+
+            if invert_mask1:
+                mask1 = 1 - mask1
+            if invert_mask2:
+                mask2 = 1 - mask2
+
+            if mask1.dim() == 2:
+                mask1 = mask1.unsqueeze(0)
+            if mask2.dim() == 2:
+                mask2 = mask2.unsqueeze(0)
+
+            b, h, w = image.shape[0], image.shape[1], image.shape[2]
+            if mask1.shape != (b, h, w):
+                mask1 = torch.zeros((b, h, w), dtype=mask1.dtype, device=mask1.device)
+            if mask2.shape != (b, h, w):
+                mask2 = torch.zeros((b, h, w), dtype=mask2.dtype, device=mask2.device)
+
+            algorithm = "torch"  # 简化逻辑，直接使用torch
+
+            if algorithm == "torch":
+                if operation == "-":
+                    current_result = torch.clamp(mask1 - mask2, min=0, max=1)
+                elif operation == "+":
+                    current_result = torch.clamp(mask1 + mask2, min=0, max=1)
+                elif operation == "*":
+                    current_result = torch.clamp(mask1 * mask2, min=0, max=1)
+                elif operation == "&":
+                    current_result = (torch.round(mask1).bool() & torch.round(mask2).bool()).float()
+                else:
+                    current_result = mask2  # 默认操作为 mask2
+
+        # 根据output_mask控制是否保留遮罩
+        if output_mask:
+            # 如果是第一次启用启用保留，缓存当前结果
+            if self.cached_mask is None:
+                # 为避免显存问题，只在需要时保存缓存，并将其移至CPU
+                self.cached_mask = current_result.detach().cpu()
+            # 使用缓存的遮罩作为结果（需要时移回GPU）
+            final_mask = self.cached_mask.to(current_result.device) if self.cached_mask.device != current_result.device else self.cached_mask
+        else:
+            # 不保留时更新缓存为当前结果
+            self.cached_mask = current_result.detach().cpu()  # 移至CPU以节省GPU显存
+            final_mask = current_result
+
+        # 返回结果
+        return {"ui": {"images": images}, "result": (image, final_mask)}
+
+    # 以下静态方法保持不变
+    @staticmethod
+    def subtract_masks(mask1, mask2):
+        mask1 = mask1.cpu()
+        mask2 = mask2.cpu()
+        cv2_mask1 = np.array(mask1) * 255
+        cv2_mask2 = np.array(mask2) * 255
+        if cv2_mask1.shape == cv2_mask2.shape:
+            cv2_mask = cv2.subtract(cv2_mask1, cv2_mask2)
+            return torch.clamp(torch.from_numpy(cv2_mask) / 255.0, min=0, max=1)
+        else:
+            print("Warning: The two masks have different shapes")
+            return mask1
+
+    @staticmethod
+    def add_masks(mask1, mask2):
+        mask1 = mask1.cpu()
+        mask2 = mask2.cpu()
+        cv2_mask1 = np.array(mask1) * 255
+        cv2_mask2 = np.array(mask2) * 255
+        if cv2_mask1.shape == cv2_mask2.shape:
+            cv2_mask = cv2.add(cv2_mask1, cv2_mask2)
+            return torch.clamp(torch.from_numpy(cv2_mask) / 255.0, min=0, max=1)
+        else:
+            print("Warning: The two masks have different shapes")
+            return mask1
+
+    @staticmethod
+    def multiply_masks(mask1, mask2):
+        mask1 = mask1.cpu()
+        mask2 = mask2.cpu()
+        cv2_mask1 = np.array(mask1) * 255
+        cv2_mask2 = np.array(mask2) * 255
+        if cv2_mask1.shape == cv2_mask2.shape:
+            cv2_mask = cv2.multiply(cv2_mask1, cv2_mask2)
+            return torch.clamp(torch.from_numpy(cv2_mask) / 255.0, min=0, max=1)
+        else:
+            print("Warning: The two masks have different shapes")
+            return mask1
+
+    @staticmethod
+    def and_masks(mask1, mask2):
+        mask1 = mask1.cpu()
+        mask2 = mask2.cpu()
+        cv2_mask1 = np.array(mask1) * 255
+        cv2_mask2 = np.array(mask2) * 255
+        if cv2_mask1.shape == cv2_mask2.shape:
+            cv2_mask = cv2.bitwise_and(cv2_mask1, cv2_mask2)
+            return torch.from_numpy(cv2_mask)
+        else:
+            print("Warning: The two masks have different shapes")
+            return mask1
+
+#endregion-------------view_bridge_image------------------
+
+
+
+
+
+
+
+def handle_error_safe(e: Exception, msg: str = "Operation failed", port_count: int = 1):
+    print(f"[CCNotes] {msg}: {e}")
+    return tuple([[""] for _ in range(port_count)])
+
+
+
+class view_Primitive:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {},
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            }
+        }
+    NAME = "view_Primitive"
+    RETURN_TYPES = tuple(any_type for _ in range(15))
+    RETURN_NAMES = tuple(f"widget_input_{i+1}" for i in range(15))
+    FUNCTION = "proxy_widget"
+    CATEGORY = "Apt_Preset/PreView"
+    OUTPUT_IS_LIST = tuple(True for _ in range(15))
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("NaN")
+
+    def normalize_value(self, value):
+        if isinstance(value, list) and len(value) >= 2 and isinstance(value[1], int):
+            value = value[0]
+        if value is None or value == "" or (isinstance(value, list) and len(value) == 0):
+            return [""]
+        elif not isinstance(value, list):
+            return [value]
+        else:
+            return [item if item is not None else "" for item in value]
+
+    def proxy_widget(self, prompt=None, unique_id=None, extra_pnginfo=None, **kwargs):
+        try:
+            input_values = {}
+            for key, value in kwargs.items():
+                if key.startswith("widget_input"):
+                    input_values[key] = self.normalize_value(value)
+            if not input_values and prompt and unique_id:
+                node_info = prompt.get(str(unique_id), {})
+                if node_info and 'inputs' in node_info:
+                    for key, value in node_info['inputs'].items():
+                        if key.startswith("widget_input"):
+                            input_values[key] = self.normalize_value(value)
+            output_values = []
+            for i in range(15):
+                port_key = f"widget_input_{i+1}"
+                port_value = input_values.get(port_key, [""])
+                output_values.append(port_value)
+            return tuple(output_values)
+        except Exception as e:
+            return handle_error_safe(e, "view_Primitive failed", 15)
+
+
+
+
+
+#region-------------IO_store_image-------------
+try:
+    from comfy_execution.graph import ExecutionBlocker
+except ImportError:
+    class ExecutionBlocker:
+        def __init__(self, value):
+            self.value = value
+
+import torch
+import numpy as np
+import io
+import base64
+import json
+from PIL import Image
+from typing import Optional, Dict, Any, List
+
+GLOBAL_STORED_IMAGES: List[torch.Tensor] = []
+GLOBAL_DISPLAY_DATA: List[Dict[str, Any]] = []
+
+class IO_store_image:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {},
+            "optional": {
+                "image": ("IMAGE", {}),
+                "image_output": (["Hide", "Preview", "Save", "Hide/Save"], {"default": "Preview"}),
+                "release_total": ("INT", {"default": 0, "min": 0, "step": 1}),
+            },
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO",},
+        }
+    NAME = "IO_store_image"
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("image", "release_total")
+    FUNCTION = "store_image"
+    CATEGORY = "Apt_Preset/IO_Port"
+    OUTPUT_NODE = True
+    DESCRIPTION = """
+    输出逻辑：
+    - 全部尺寸一致时：
+      - release_total ≤ 0 → 输出最后一张图像
+      - release_total > 0 → 
+        1. 存储总数 = release_total → 输出全部
+        2. 存储总数 < release_total → 关闭输出
+        3. 存储总数 > release_total → 从后面数够数量的图像输出
+    - 若不是全部一致时：仅输出最后一张图像
+"""
+
+    def __init__(self):
+        global GLOBAL_STORED_IMAGES, GLOBAL_DISPLAY_DATA
+        GLOBAL_STORED_IMAGES = []
+        GLOBAL_DISPLAY_DATA = []
+        print("IO_store_image node initialized (storage reset)")
+
+    # ========== 核心改造：原IMAGE_BooleanSwitch合并为内部方法 ==========
+    def _image_boolean_switch(self, switch: bool, image: Optional[torch.Tensor] = None):
+        """原IMAGE_BooleanSwitch的核心逻辑，合并为内部私有方法"""
+        if switch is True:
+            return (image,)
+        else:
+            if ExecutionBlocker is not None:
+                return (ExecutionBlocker(None),)
+            else:
+                return ({},)
+
+    def store_image(self, image: Optional[torch.Tensor] = None, 
+                   prompt: Any = None, image_output: str = None, 
+                   extra_pnginfo: Any = None, release_total: float = 0) -> Dict[str, Any]:
+        global GLOBAL_STORED_IMAGES, GLOBAL_DISPLAY_DATA
+        
+        # 图像存储逻辑：去重+追加，原逻辑保留不变
+        if image is not None:
+            if not GLOBAL_STORED_IMAGES:
+                GLOBAL_STORED_IMAGES.append(image)
+                GLOBAL_DISPLAY_DATA.append(self._prepare_image_display(image))
+            else:
+                last_img = GLOBAL_STORED_IMAGES[-1]
+                if image.shape != last_img.shape:
+                    GLOBAL_STORED_IMAGES.append(image)
+                    GLOBAL_DISPLAY_DATA.append(self._prepare_image_display(image))
+                else:
+                    if not torch.allclose(image, last_img):
+                        GLOBAL_STORED_IMAGES.append(image)
+                        GLOBAL_DISPLAY_DATA.append(self._prepare_image_display(image))
+        
+        total_stored = len(GLOBAL_STORED_IMAGES)
+        output_image = None
+        switch_boolean = False  # 核心布尔开关，默认关闭输出
+
+        # 通道数不一致的判断逻辑
+        if total_stored > 0:
+            channels = [img.shape[1] for img in GLOBAL_STORED_IMAGES]
+            if len(set(channels)) > 1:
+                print("Warning: Images have different channel counts, outputting last image")
+                output_image = GLOBAL_STORED_IMAGES[-1]
+                current_total = total_stored
+                return self._prepare_return_data(output_image, current_total, image_output, prompt, extra_pnginfo)
+        
+        # 判断所有存储图像尺寸是否一致
+        if total_stored > 0:
+            sizes = [(img.shape[2], img.shape[3]) for img in GLOBAL_STORED_IMAGES]
+            sizes_consistent = len(set(sizes)) == 1
+        else:
+            sizes_consistent = False
+        
+        # ========== 核心改造：全新业务逻辑 + 标准IF布尔判断 ==========
+        if total_stored == 0:
+            output_image = image
+            current_total = 0
+        else:
+            # 尺寸不一致 → 固定输出最后一张图像
+            if not sizes_consistent:
+                output_image = GLOBAL_STORED_IMAGES[-1]
+                current_total = total_stored
+            # 尺寸一致 → 执行新的核心分支逻辑
+            else:
+                release_total = int(release_total)
+                # 分支1: release_total ≤ 0 → 默认仅输出最后一张图像
+                if release_total <= 0:
+                    switch_boolean = True
+                    output_image = GLOBAL_STORED_IMAGES[-1]
+                    current_total = total_stored
+                # 分支2: release_total > 0 → 三层IF布尔判断
+                else:
+                    # 子分支1: 存储总数 = release_total → 布尔真，打开输出，输出全部
+                    if total_stored == release_total:
+                        switch_boolean = True
+                        output_image = torch.cat(GLOBAL_STORED_IMAGES, dim=0)
+                        current_total = total_stored
+                    # 子分支2: 存储总数 < release_total → 布尔假，关闭输出
+                    elif total_stored < release_total:
+                        switch_boolean = False
+                        output_image = None
+                        current_total = total_stored
+                    # 子分支3: 存储总数 > release_total → 布尔真，打开输出，输出倒数N张
+                    elif total_stored > release_total:
+                        switch_boolean = True
+                        start_idx = total_stored - release_total
+                        selected_imgs = GLOBAL_STORED_IMAGES[start_idx:]
+                        output_image = torch.cat(selected_imgs, dim=0)
+                        current_total = release_total
+
+        # 兜底空值处理
+        if output_image is None:
+            output_image = image
+            current_total = 0
+
+        # ========== 核心调用：使用合并后的内部开关逻辑，控制最终输出 ==========
+        final_output_image = self._image_boolean_switch(switch_boolean, output_image)[0]
+
+        return self._prepare_return_data(final_output_image, current_total, image_output, prompt, extra_pnginfo)
+
+    def _prepare_image_display(self, image_tensor: torch.Tensor) -> Dict[str, Any]:
+        try:
+            img_np = image_tensor[0].cpu().numpy()
+            img_np = np.transpose(img_np, (1, 2, 0))
+            img_np = (img_np * 255).astype(np.uint8)
+            
+            buffer = io.BytesIO()
+            Image.fromarray(img_np).save(buffer, format="PNG")
+            img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            
+            return {
+                "type": "image",
+                "shape": image_tensor.shape,
+                "size": f"{image_tensor.shape[2]}x{image_tensor.shape[3]}",
+                "data": img_b64,
+                "index": len(GLOBAL_STORED_IMAGES)
+            }
+        except Exception as e:
+            return {
+                "type": "image",
+                "error": str(e),
+                "shape": image_tensor.shape if isinstance(image_tensor, torch.Tensor) else "invalid"
+            }
+    
+    def _prepare_return_data(self, output_image: torch.Tensor, current_total: int, 
+                            image_output: str, prompt: Any, extra_pnginfo: Any) -> Dict[str, Any]:
+        try:
+            results = []
+            for img in GLOBAL_STORED_IMAGES:
+                results.extend(easySave(img, 'easyPreview', image_output, prompt, extra_pnginfo))
+        except NameError:
+            results = []
+            print("Warning: easySave function not found")
+        
+        if image_output in ("Hide", "Hide/Save"):
+            return {"ui": {}, "result": (output_image, current_total)}
+        return {"ui": {"images": results}, "result": (output_image, current_total)}
+
+    @classmethod
+    def IS_CHANGED(cls, image: Optional[torch.Tensor] = None, 
+                   release_total: float = 0, image_output: str = None) -> str:
+        img_id = f"{image.shape}-{id(image)}" if isinstance(image, torch.Tensor) else "none"
+        return json.dumps({
+            "image_id": img_id, 
+            "release_total": int(release_total),
+            "image_output": image_output
+        })
+
+    def get_display_content(self) -> Dict[str, Any]:
+        return {
+            "total_images": len(GLOBAL_STORED_IMAGES),
+            "images": GLOBAL_DISPLAY_DATA,
+            "last_updated": str(len(GLOBAL_STORED_IMAGES))
+        }
+
+def __reload__(module):
+    global GLOBAL_STORED_IMAGES, GLOBAL_DISPLAY_DATA
+    GLOBAL_STORED_IMAGES = []
+    GLOBAL_DISPLAY_DATA = []
+    print("IO_store_image module reloaded (storage reset)")
+
+#endregion-------------IO_store_image------------------
+
+
+
+
+
+
+#region-------------IO_EasyMark------------------
+
+import torch
+import numpy as np
+import nodes
+from PIL import Image
+from PIL import ImageDraw, ImageFont
+import io
+import base64
+
+class IO_EasyMark:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "brush_data": ("STRING", {"default": "", "multiline": True}),
+                "brush_size": ("INT", {"default": 4, "min": 1, "max": 100, "step": 1}),
+                "image_base64": ("STRING", {"default": "", "multiline": True}),
+            },
+        }
+
+    NAME="IO_EasyMark"
+    RETURN_TYPES = ("IMAGE", "IMAGE", "MASK", "MASK", "MASK", "MASK", "MASK", "MASK", "MASK")
+    RETURN_NAMES = ("原图", "合成图", "总mask", "黑mask", "白mask", "红mask", "绿mask", "蓝mask", "灰mask")
+    FUNCTION = "main"
+    CATEGORY = "Apt_Preset/IO_Port"
+
+    def main(self, brush_data, brush_size, image_base64):
+        if isinstance(image_base64, (list, tuple)):
+            image_base64 = next((x for x in image_base64 if isinstance(x, str) and x.strip()), "") if image_base64 else ""
+        elif image_base64 is None:
+            image_base64 = ""
+        elif not isinstance(image_base64, str):
+            image_base64 = str(image_base64)
+
+        if isinstance(brush_data, (list, tuple)):
+            brush_data = next((x for x in brush_data if isinstance(x, str) and x.strip()), "") if brush_data else ""
+        elif brush_data is None:
+            brush_data = ""
+        elif not isinstance(brush_data, str):
+            brush_data = str(brush_data)
+
+        background_img_tensor = None
+        
+        if image_base64 and image_base64.strip():
+            try:
+                base64_data = image_base64.strip()
+                if ',' in base64_data:
+                    base64_data = base64_data.split(',')[-1]
+                
+                img_bytes = base64.b64decode(base64_data)
+                img_pil = Image.open(io.BytesIO(img_bytes))
+                if img_pil.mode != 'RGB':
+                    img_pil = img_pil.convert('RGB')
+                img_np = np.array(img_pil).astype(np.float32) / 255.0
+                background_img_tensor = torch.from_numpy(img_np).unsqueeze(0)
+            except Exception as e:
+                print(f"Error loading image from base64: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        if background_img_tensor is None:
+            background_img_tensor = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+        
+        batch_size = background_img_tensor.shape[0]
+        height = background_img_tensor.shape[1]
+        width = background_img_tensor.shape[2]
+        
+        black_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        white_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        red_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        green_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        blue_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        gray_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        marker_annotations = []
+        
+        if brush_data and brush_data.strip():
+            try:
+                strokes = brush_data.split('|')
+                
+                black_mask_np = black_mask[0].numpy().copy()
+                white_mask_np = white_mask[0].numpy().copy()
+                red_mask_np = red_mask[0].numpy().copy()
+                green_mask_np = green_mask[0].numpy().copy()
+                blue_mask_np = blue_mask[0].numpy().copy()
+                gray_mask_np = gray_mask[0].numpy().copy()
+                
+                color_mapping = {
+                    "0,0,0": "black",
+                    "255,255,255": "white",
+                    "255,0,0": "red",
+                    "0,255,0": "green",
+                    "0,0,255": "blue",
+                    "128,128,128": "gray"
+                }
+                
+                for stroke_idx, stroke in enumerate(strokes):
+                    if not stroke.strip():
+                        continue
+                    
+                    mode = 'brush'
+                    stroke_type = 'free'
+                    stroke_size = brush_size
+                    stroke_opacity = 1.0
+                    stroke_color = "255,255,255"
+                    points_str = stroke
+                    marker_id = None
+                    
+                    if ':' in stroke:
+                        parts = stroke.split(':')
+                        if len(parts) >= 6:
+                            mode = parts[0] if parts[0] in ('brush', 'erase') else 'brush'
+                            stroke_type = parts[1] if parts[1] in ('free', 'box', 'square') else 'free'
+                            stroke_size = int(float(parts[2]))
+                            stroke_opacity = float(parts[3])
+                            stroke_color = parts[4]
+                            if len(parts) >= 7 and parts[5] in ('1', '2', '3', '4', '5', '6') and ',' not in parts[5]:
+                                marker_id = parts[5]
+                                points_str = ':'.join(parts[6:])
+                            else:
+                                points_str = ':'.join(parts[5:])
+                        elif len(parts) >= 2:
+                            if parts[0] in ('brush', 'erase'):
+                                mode = parts[0]
+                                points_str = ':'.join(parts[1:])
+                            elif parts[0] in ('free', 'box', 'square'):
+                                stroke_type = parts[0]
+                                points_str = ':'.join(parts[1:])
+                    
+                    radius = max(1, stroke_size // 2)
+                    
+                    point_list = points_str.split(';')
+                    path_points = []
+                    
+                    for point_str in point_list:
+                        if not point_str.strip():
+                            continue
+                        try:
+                            coords = point_str.split(',', 1)
+                            if len(coords) == 2:
+                                x = int(float(coords[0]))
+                                y = int(float(coords[1]))
+                                path_points.append((x, y))
+                        except (ValueError, IndexError):
+                            continue
+                    
+                    if len(path_points) == 0:
+                        continue
+                    
+                    stroke_color_key = stroke_color
+                    color_type = color_mapping.get(stroke_color_key, "default")
+                    
+                    x_coords = [p[0] for p in path_points]
+                    y_coords = [p[1] for p in path_points]
+                    min_x, max_x = min(x_coords), max(x_coords)
+                    min_y, max_y = min(y_coords), max(y_coords)
+
+                    if marker_id is not None and stroke_type == 'square' and mode != 'erase':
+                        valid_min_x = max(0, min_x)
+                        valid_max_x = min(width - 1, max_x)
+                        valid_min_y = max(0, min_y)
+                        valid_max_y = min(height - 1, max_y)
+                        if valid_max_x > valid_min_x and valid_max_y > valid_min_y:
+                            marker_annotations.append({
+                                "id": marker_id,
+                                "min_x": int(valid_min_x),
+                                "max_x": int(valid_max_x),
+                                "min_y": int(valid_min_y),
+                                "max_y": int(valid_max_y),
+                            })
+                        continue
+                    
+                    if stroke_type == 'square':
+                        valid_min_x = max(0, min_x)
+                        valid_max_x = min(width, max_x + 1)
+                        valid_min_y = max(0, min_y)
+                        valid_max_y = min(height, max_y + 1)
+                        
+                        if valid_max_x <= valid_min_x or valid_max_y <= valid_min_y:
+                            continue
+                        
+                        if mode == 'erase':
+                            black_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = 0.0
+                            white_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = 0.0
+                            red_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = 0.0
+                            green_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = 0.0
+                            blue_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = 0.0
+                            gray_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = 0.0
+                        else:
+                            if color_type == "black":
+                                black_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = stroke_opacity
+                            elif color_type == "white":
+                                white_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = stroke_opacity
+                            elif color_type == "red":
+                                red_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = stroke_opacity
+                            elif color_type == "green":
+                                green_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = stroke_opacity
+                            elif color_type == "blue":
+                                blue_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = stroke_opacity
+                            elif color_type == "gray":
+                                gray_mask_np[valid_min_y:valid_max_y, valid_min_x:valid_max_x] = stroke_opacity
+                    elif stroke_type == 'box':
+                        x0 = max(0, min_x)
+                        x1 = min(width, max_x + 1)
+                        y0 = max(0, min_y)
+                        y1 = min(height, max_y + 1)
+
+                        if x1 <= x0 or y1 <= y0:
+                            continue
+
+                        thickness = max(1, int(stroke_size))
+                        top_y1 = min(y1, y0 + thickness)
+                        bottom_y0 = max(y0, y1 - thickness)
+                        left_x1 = min(x1, x0 + thickness)
+                        right_x0 = max(x0, x1 - thickness)
+
+                        edges = [
+                            (slice(y0, top_y1), slice(x0, x1)),
+                            (slice(bottom_y0, y1), slice(x0, x1)),
+                            (slice(y0, y1), slice(x0, left_x1)),
+                            (slice(y0, y1), slice(right_x0, x1)),
+                        ]
+
+                        if mode == 'erase':
+                            for ys, xs in edges:
+                                black_mask_np[ys, xs] = 0.0
+                                white_mask_np[ys, xs] = 0.0
+                                red_mask_np[ys, xs] = 0.0
+                                green_mask_np[ys, xs] = 0.0
+                                blue_mask_np[ys, xs] = 0.0
+                                gray_mask_np[ys, xs] = 0.0
+                        else:
+                            target_mask = None
+                            if color_type == "black":
+                                target_mask = black_mask_np
+                            elif color_type == "white":
+                                target_mask = white_mask_np
+                            elif color_type == "red":
+                                target_mask = red_mask_np
+                            elif color_type == "green":
+                                target_mask = green_mask_np
+                            elif color_type == "blue":
+                                target_mask = blue_mask_np
+                            elif color_type == "gray":
+                                target_mask = gray_mask_np
+                            if target_mask is not None:
+                                for ys, xs in edges:
+                                    target_mask[ys, xs] = stroke_opacity
+                    else:
+                        for i, (x, y) in enumerate(path_points):
+                                if i > 0:
+                                    prev_x, prev_y = path_points[i-1]
+                                    if mode == 'erase':
+                                        self._erase_line(black_mask_np, prev_x, prev_y, x, y, radius)
+                                        self._erase_line(white_mask_np, prev_x, prev_y, x, y, radius)
+                                        self._erase_line(red_mask_np, prev_x, prev_y, x, y, radius)
+                                        self._erase_line(green_mask_np, prev_x, prev_y, x, y, radius)
+                                        self._erase_line(blue_mask_np, prev_x, prev_y, x, y, radius)
+                                        self._erase_line(gray_mask_np, prev_x, prev_y, x, y, radius)
+                                    else:
+                                        if color_type == "black":
+                                            self._draw_line(black_mask_np, prev_x, prev_y, x, y, radius)
+                                        elif color_type == "white":
+                                            self._draw_line(white_mask_np, prev_x, prev_y, x, y, radius)
+                                        elif color_type == "red":
+                                            self._draw_line(red_mask_np, prev_x, prev_y, x, y, radius)
+                                        elif color_type == "green":
+                                            self._draw_line(green_mask_np, prev_x, prev_y, x, y, radius)
+                                        elif color_type == "blue":
+                                            self._draw_line(blue_mask_np, prev_x, prev_y, x, y, radius)
+                                        elif color_type == "gray":
+                                            self._draw_line(gray_mask_np, prev_x, prev_y, x, y, radius)
+                                else:
+                                    if mode == 'erase':
+                                        self._erase_circle(black_mask_np, x, y, radius)
+                                        self._erase_circle(white_mask_np, x, y, radius)
+                                        self._erase_circle(red_mask_np, x, y, radius)
+                                        self._erase_circle(green_mask_np, x, y, radius)
+                                        self._erase_circle(blue_mask_np, x, y, radius)
+                                        self._erase_circle(gray_mask_np, x, y, radius)
+                                    else:
+                                        if color_type == "black":
+                                            self._draw_circle(black_mask_np, x, y, radius)
+                                        elif color_type == "white":
+                                            self._draw_circle(white_mask_np, x, y, radius)
+                                        elif color_type == "red":
+                                            self._draw_circle(red_mask_np, x, y, radius)
+                                        elif color_type == "green":
+                                            self._draw_circle(green_mask_np, x, y, radius)
+                                        elif color_type == "blue":
+                                            self._draw_circle(blue_mask_np, x, y, radius)
+                                        elif color_type == "gray":
+                                            self._draw_circle(gray_mask_np, x, y, radius)
+                
+                black_mask[0] = torch.from_numpy(black_mask_np)
+                white_mask[0] = torch.from_numpy(white_mask_np)
+                red_mask[0] = torch.from_numpy(red_mask_np)
+                green_mask[0] = torch.from_numpy(green_mask_np)
+                blue_mask[0] = torch.from_numpy(blue_mask_np)
+                gray_mask[0] = torch.from_numpy(gray_mask_np)
+                        
+            except Exception as e:
+                print(f"Error parsing brush data: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        black_mask = torch.clamp(black_mask, 0.0, 1.0)
+        white_mask = torch.clamp(white_mask, 0.0, 1.0)
+        red_mask = torch.clamp(red_mask, 0.0, 1.0)
+        green_mask = torch.clamp(green_mask, 0.0, 1.0)
+        blue_mask = torch.clamp(blue_mask, 0.0, 1.0)
+        gray_mask = torch.clamp(gray_mask, 0.0, 1.0)
+        
+        sum_mask = torch.maximum(black_mask, white_mask)
+        sum_mask = torch.maximum(sum_mask, red_mask)
+        sum_mask = torch.maximum(sum_mask, green_mask)
+        sum_mask = torch.maximum(sum_mask, blue_mask)
+        sum_mask = torch.maximum(sum_mask, gray_mask)
+        
+        sum_image = background_img_tensor.clone()
+        
+        black_mask_4d = black_mask.unsqueeze(-1)
+        white_mask_4d = white_mask.unsqueeze(-1)
+        red_mask_4d = red_mask.unsqueeze(-1)
+        green_mask_4d = green_mask.unsqueeze(-1)
+        blue_mask_4d = blue_mask.unsqueeze(-1)
+        gray_mask_4d = gray_mask.unsqueeze(-1)
+        
+        sum_image = sum_image * (1 - black_mask_4d) + torch.tensor([0.0, 0.0, 0.0]).to(sum_image.device) * black_mask_4d
+        sum_image = sum_image * (1 - white_mask_4d) + torch.tensor([1.0, 1.0, 1.0]).to(sum_image.device) * white_mask_4d
+        sum_image = sum_image * (1 - red_mask_4d) + torch.tensor([1.0, 0.0, 0.0]).to(sum_image.device) * red_mask_4d
+        sum_image = sum_image * (1 - green_mask_4d) + torch.tensor([0.0, 1.0, 0.0]).to(sum_image.device) * green_mask_4d
+        sum_image = sum_image * (1 - blue_mask_4d) + torch.tensor([0.0, 0.0, 1.0]).to(sum_image.device) * blue_mask_4d
+        sum_image = sum_image * (1 - gray_mask_4d) + torch.tensor([0.5, 0.5, 0.5]).to(sum_image.device) * gray_mask_4d
+
+        if marker_annotations:
+            font_cache = {}
+            pil_font_path = os.path.join(os.path.dirname(ImageFont.__file__), "fonts", "DejaVuSans.ttf")
+            def get_font(font_size: int):
+                font_size = int(font_size)
+                cached = font_cache.get(font_size)
+                if cached is not None:
+                    return cached
+                font = None
+                for candidate in ("arial.ttf", "DejaVuSans.ttf", pil_font_path):
+                    try:
+                        font = ImageFont.truetype(candidate, size=font_size)
+                        break
+                    except Exception:
+                        font = None
+                if font is None:
+                    font = ImageFont.load_default()
+                font_cache[font_size] = font
+                return font
+            for b in range(batch_size):
+                img_np = (sum_image[b].detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+                img_pil = Image.fromarray(img_np, mode='RGB')
+                draw = ImageDraw.Draw(img_pil)
+                for m in marker_annotations:
+                    x0 = int(m["min_x"])
+                    y0 = int(m["min_y"])
+                    x1 = int(m["max_x"])
+                    y1 = int(m["max_y"])
+                    side = max(1, min(abs(x1 - x0), abs(y1 - y0)))
+                    font = get_font(max(12, int(side * 0.6)))
+                    draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 0), outline=(0, 0, 0), width=2)
+                    text = str(m["id"])
+                    try:
+                        bbox = draw.textbbox((0, 0), text, font=font)
+                        tw = bbox[2] - bbox[0]
+                        th = bbox[3] - bbox[1]
+                    except Exception:
+                        tw, th = font.getsize(text)
+                    tx = x0 + max(0, (x1 - x0 - tw) // 2)
+                    ty = y0 + max(0, (y1 - y0 - th) // 2)
+                    draw.text((tx, ty), text, fill=(0, 0, 0), font=font)
+
+                img_out = np.array(img_pil).astype(np.float32) / 255.0
+                sum_image[b] = torch.from_numpy(img_out).to(sum_image.device)
+        
+        return (background_img_tensor, sum_image, sum_mask, black_mask, white_mask, red_mask, green_mask, blue_mask, gray_mask)
+    
+    def _draw_circle(self, mask, x, y, radius):
+        h, w = mask.shape
+        y_min = max(0, y - radius)
+        y_max = min(h, y + radius + 1)
+        x_min = max(0, x - radius)
+        x_max = min(w, x + radius + 1)
+        
+        if x_max <= x_min or y_max <= y_min:
+            return
+        
+        y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
+        
+        dist_sq = (x_coords - x)**2 + (y_coords - y)**2
+        radius_sq = radius * radius
+        
+        mask[y_min:y_max, x_min:x_max] = np.maximum(
+            mask[y_min:y_max, x_min:x_max],
+            (dist_sq <= radius_sq).astype(np.float32)
+        )
+    
+    def _draw_line(self, mask, x1, y1, x2, y2, radius):
+        if x1 == x2 and y1 == y2:
+            self._draw_circle(mask, x1, y1, radius)
+            return
+        
+        dx = x2 - x1
+        dy = y2 - y1
+        length = np.sqrt(dx*dx + dy*dy)
+        
+        if radius > 10:
+            step_size = max(1, radius // 3)
+        else:
+            step_size = 1
+        
+        steps = max(1, int(length / step_size) + 1)
+        
+        if steps <= 0:
+            self._draw_circle(mask, x1, y1, radius)
+            return
+        
+        t_values = np.linspace(0, 1, steps + 1)
+        x_coords = (x1 + dx * t_values).astype(np.int32)
+        y_coords = (y1 + dy * t_values).astype(np.int32)
+        
+        h, w = mask.shape
+        valid_mask = (x_coords >= 0) & (x_coords < w) & (y_coords >= 0) & (y_coords < h)
+        x_coords = x_coords[valid_mask]
+        y_coords = y_coords[valid_mask]
+        
+        if len(x_coords) > 0:
+            coords = np.column_stack((y_coords, x_coords))
+            unique_coords = np.unique(coords, axis=0)
+            
+            for y, x in unique_coords:
+                self._draw_circle(mask, int(x), int(y), radius)
+    
+    def _erase_circle(self, mask, x, y, radius):
+        h, w = mask.shape
+        y_min = max(0, y - radius)
+        y_max = min(h, y + radius + 1)
+        x_min = max(0, x - radius)
+        x_max = min(w, x + radius + 1)
+        
+        if x_max <= x_min or y_max <= y_min:
+            return
+        
+        y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
+        
+        dist_sq = (x_coords - x)**2 + (y_coords - y)**2
+        radius_sq = radius * radius
+        
+        erase_mask = dist_sq <= radius_sq
+        mask[y_min:y_max, x_min:x_max] = np.where(
+            erase_mask,
+            0.0,
+            mask[y_min:y_max, x_min:x_max]
+        )
+    
+    def _erase_line(self, mask, x1, y1, x2, y2, radius):
+        if x1 == x2 and y1 == y2:
+            self._erase_circle(mask, x1, y1, radius)
+            return
+        
+        dx = x2 - x1
+        dy = y2 - y1
+        length = np.sqrt(dx*dx + dy*dy)
+        
+        if radius > 10:
+            step_size = max(1, radius // 3)
+        else:
+            step_size = 1
+        
+        steps = max(1, int(length / step_size) + 1)
+        
+        if steps <= 0:
+            self._erase_circle(mask, x1, y1, radius)
+            return
+        
+        t_values = np.linspace(0, 1, steps + 1)
+        x_coords = (x1 + dx * t_values).astype(np.int32)
+        y_coords = (y1 + dy * t_values).astype(np.int32)
+        
+        h, w = mask.shape
+        valid_mask = (x_coords >= 0) & (x_coords < w) & (y_coords >= 0) & (y_coords < h)
+        x_coords = x_coords[valid_mask]
+        y_coords = y_coords[valid_mask]
+        
+        if len(x_coords) > 0:
+            coords = np.column_stack((y_coords, x_coords))
+            unique_coords = np.unique(coords, axis=0)
+            
+            for y, x in unique_coords:
+                self._erase_circle(mask, int(x), int(y), radius)
+
+#endregion-------------IO_EasyMark------------------
+
+
+
+
+
+
+#region----------------IO_load_image_list
+
+
+
+import os
+import hashlib
+import json
+import shutil
+
+import numpy as np
+import torch
+from PIL import Image, ImageOps, ImageSequence
+
+import folder_paths
+import node_helpers
+
+
+@routes.get("/Apt_Preset_IO_LoadImgList_thumb")
+async def apt_preset_io_loadimglist_thumb(request):
+    filename = request.query.get("filename", "")
+    size_raw = request.query.get("size", "64")
+    try:
+        size = int(size_raw)
+    except Exception:
+        size = 64
+    if size < 32:
+        size = 32
+    if size > 2048:
+        size = 2048
+    render_size = 256 if size < 256 else size
+
+    if not filename or not folder_paths.exists_annotated_filepath(filename):
+        return web.Response(status=404)
+
+    image_path = folder_paths.get_annotated_filepath(filename)
+    try:
+        img0 = node_helpers.pillow(Image.open, image_path)
+        frame0 = next(ImageSequence.Iterator(img0))
+        frame0 = node_helpers.pillow(ImageOps.exif_transpose, frame0)
+        frame0 = frame0.convert("RGB")
+    except Exception:
+        return web.Response(status=500)
+
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+    contained = ImageOps.contain(frame0, (render_size, render_size), method=resample)
+    canvas = Image.new("RGB", (render_size, render_size), (0, 0, 0))
+    ox = (render_size - contained.size[0]) // 2
+    oy = (render_size - contained.size[1]) // 2
+    canvas.paste(contained, (ox, oy))
+
+    buf = io.BytesIO()
+    if render_size <= 256:
+        canvas.save(buf, format="PNG", optimize=True)
+        return web.Response(body=buf.getvalue(), content_type="image/png")
+    canvas.save(buf, format="JPEG", quality=92, optimize=True)
+    return web.Response(body=buf.getvalue(), content_type="image/jpeg")
 
 
 
@@ -3416,5 +4162,1152 @@ class flow_ChangeDetector:
 
 
 
+#endregion----------------load_image_list---------------------------
 
 
+
+
+class IO_PathProcessor:
+    CATEGORY = "Apt_Preset/IO_Port"
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("NewPathList", "FileNameList", "FolderList")
+    FUNCTION = "process_paths"
+    INPUT_IS_LIST = (True,)
+    OUTPUT_IS_LIST = (True, True, True)
+
+    DESCRIPTION = r"""
+    【正则排序规则（三种常用写法）】
+    1. 开头匹配：^(\d+) → （如12AI图片.png中的12）
+    2. 结尾匹配：(\d{2})(?=\.\w+$) → （如AI图片63.png中的63）
+    3. 括号匹配：\((\d+)\) → （如图片(45).png中的45）
+    """
+
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "path_list": ("STRING", {"forceInput": True}),
+                "remove_file_suffix": ("BOOLEAN", {"default": True}),
+                "filter_suffixes": ("STRING", {"default": "", "placeholder": "e.g.: png|jpg|jpeg, leave empty for all"}),
+                "regex_filter": ("STRING", {"default": "", "placeholder": "Regex for filtering paths, e.g.: ^(?!.*00291).*$ (exclude 00291)"}),
+                "regex_sort_pattern": ("STRING", {"default": "", "placeholder": "匹配括号数字留空，其他填正则"}),
+                "sort_order": (["up", "down"], {"default": "up"}),
+                "path_duplication_count": ("INT", {"default": 1, "min": 1, "max": 100, "step": 1}),
+            }
+        }
+
+    def _extract_regex_sort_key(self, path: str, pattern: str) -> float:
+        filename = os.path.basename(path)
+        if not pattern or pattern.strip() == "":
+            match = re.search(r'\((\d+)\)', filename)
+        else:
+            try:
+                match = re.search(pattern, filename)
+            except re.error:
+                match = re.search(r'\((\d+)\)', filename)
+
+        if match and len(match.groups()) > 0:
+            try:
+                return float(match.group(1))
+            except:
+                return 0.0
+
+        return sum(ord(c) for c in filename) / 10000.0
+
+    def process_paths(self, path_list, remove_file_suffix, filter_suffixes, regex_filter, regex_sort_pattern, sort_order, path_duplication_count):
+        if isinstance(remove_file_suffix, list):
+            remove_file_suffix = remove_file_suffix[0]
+        if isinstance(filter_suffixes, list):
+            filter_suffixes = filter_suffixes[0]
+        if isinstance(regex_filter, list):
+            regex_filter = regex_filter[0]
+        if isinstance(regex_sort_pattern, list):
+            regex_sort_pattern = regex_sort_pattern[0]
+        if isinstance(sort_order, list):
+            sort_order = sort_order[0]
+        if isinstance(path_duplication_count, list):
+            path_duplication_count = path_duplication_count[0]
+
+        if isinstance(path_list, list):
+            raw_paths = []
+            for item in path_list:
+                if isinstance(item, str):
+                    paths = [p.strip().strip('"').strip("'") for p in item.split("\n") if p.strip()]
+                    raw_paths.extend(paths)
+                elif isinstance(item, list):
+                    for sub_item in item:
+                        paths = [p.strip().strip('"').strip("'") for p in str(sub_item).split("\n") if p.strip()]
+                        raw_paths.extend(paths)
+        else:
+            raw_paths = [p.strip().strip('"').strip("'") for p in str(path_list).split("\n") if p.strip()]
+
+        processed_paths = [p for p in raw_paths if os.path.normpath(p)]
+
+        filtered_paths = []
+        filter_suffixes_list = [s.strip().lower() for s in filter_suffixes.split("|") if s.strip()]
+        if not filter_suffixes_list:
+            filtered_paths = processed_paths.copy()
+        else:
+            for path in processed_paths:
+                file_ext = os.path.splitext(path)[1].lower().lstrip(".")
+                if file_ext in filter_suffixes_list:
+                    filtered_paths.append(path)
+
+        if regex_filter:
+            try:
+                filter_re = re.compile(regex_filter, re.IGNORECASE)
+                filtered_paths = [path for path in filtered_paths if filter_re.match(path)]
+            except re.error as e:
+                pass
+
+        if filtered_paths:
+            sorted_paths = sorted(
+                filtered_paths,
+                key=lambda x: self._extract_regex_sort_key(x, regex_sort_pattern),
+                reverse=(sort_order == "down")
+            )
+            filtered_paths = sorted_paths
+
+        reused_paths = []
+        for path in filtered_paths:
+            reused_paths.extend([path] * path_duplication_count)
+        filtered_paths = reused_paths
+
+        folder_names = []
+        file_names = []
+        new_path_list = filtered_paths.copy()
+        seen_folders = set()
+
+        for path in filtered_paths:
+            parent_dir = os.path.dirname(os.path.normpath(path))
+            folder_name = os.path.basename(parent_dir)
+            if folder_name not in seen_folders:
+                seen_folders.add(folder_name)
+
+            file_name = os.path.basename(os.path.normpath(path))
+            if remove_file_suffix:
+                file_name = os.path.splitext(file_name)[0]
+            file_names.append(file_name)
+
+        folder_names = list(seen_folders)
+
+        return (new_path_list, file_names, folder_names)
+
+
+
+class IO_RegexPreset:
+    CATEGORY = "Apt_Preset/IO_Port"
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("regex_pattern", "rule_description")
+    FUNCTION = "generate_regex"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "preset": (["排除空内容", "排除空+纯空白", "包含关键词", "不包含关键词", "以关键词开头", "以关键词结尾", "多关键词包含(或)", "多关键词包含(且)", "批量排除关键词", "匹配数字", "匹配字母", "匹配中文", "匹配数字+字母", "排除特定值", "仅匹配特定值", "匹配文件名开头数字", "匹配文件名结尾数字", "匹配括号中的数字", "自定义"], {"default": "自定义"}),
+            },
+            "optional": {
+                "custom_regex": ("STRING", {"default": "", "placeholder": "自定义正则（无需/包裹，例：^[\u4e00-\u9fa5]+$）"}),
+                "keyword": ("STRING", {"default": "", "placeholder": "输入关键词，多值用|分隔（例：油画|水彩）"}),
+                "ignore_case": ("BOOLEAN", {"default": True, "label_on": "忽略大小写", "label_off": "区分大小写"}),
+                "escape_special_chars": ("BOOLEAN", {"default": True, "label_on": "转义特殊字符", "label_off": "保留特殊字符"}),
+                "preview_test_text": ("STRING", {"default": "", "multiline": True, "placeholder": "测试文本，多值用|分隔（例：12图片.png|图片(34).png）"})
+            }
+        }
+
+    def get_rule_desc(self, preset, keyword, ignore_case):
+        desc_map = {
+            "排除空内容": "筛选掉空字符串选项，仅保留含至少1个字符的选项",
+            "排除空+纯空白": "筛选掉空/纯空格/制表符选项，仅保留非空白字符选项",
+            "包含关键词": f"仅显示包含「{keyword}」的选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "不包含关键词": f"排除所有包含「{keyword}」的选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "以关键词开头": f"仅显示以「{keyword}」开头的选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "以关键词结尾": f"仅显示以「{keyword}」结尾的选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "多关键词包含(或)": f"仅显示包含「{keyword.replace('|', '」或「')}」的选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "多关键词包含(且)": f"仅显示同时包含「{keyword.replace('|', '」和「')}」的选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "批量排除关键词": f"排除包含「{keyword.replace('|', '」或「')}」的所有选项（{'忽略' if ignore_case else '区分'}大小写）",
+            "匹配数字": "仅显示包含数字（0-9）的选项",
+            "匹配字母": "仅显示包含英文字母（a-z/A-Z）的选项",
+            "匹配中文": "仅显示包含中文（\u4e00-\u9fa5）的选项",
+            "匹配数字+字母": "仅显示包含数字或字母的选项",
+            "排除特定值": f"精准排除「{keyword}」这个选项（完全匹配）",
+            "仅匹配特定值": f"仅显示「{keyword}」这个选项（完全匹配）",
+            "匹配文件名开头数字": "仅匹配文件名开头的连续数字（如12图片.png中的12）",
+            "匹配文件名结尾数字": "仅匹配文件名扩展名前的最后两位数字（如图片63.png中的63）",
+            "匹配括号中的数字": "仅匹配括号内的连续数字（如图片(45).png中的45）",
+            "自定义": f"使用自定义正则：{self.custom_regex if hasattr(self, 'custom_regex') else '无'}"
+        }
+        return desc_map.get(preset, "未知筛选规则")
+
+
+    def preview_regex_effect(self, regex_pattern, test_text):
+        if not regex_pattern or not test_text:
+            return "无测试数据"
+        core_regex = regex_pattern.strip('/')
+        if not core_regex:
+            return "正则格式错误"
+        test_options = [opt.strip() for opt in test_text.split('|')]
+        matched_options = []
+        try:
+            flags = re.IGNORECASE if self.ignore_case else 0
+            pattern = re.compile(core_regex, flags)
+            for opt in test_options:
+                if pattern.search(opt):
+                    matched_options.append(opt)
+        except Exception as e:
+            return f"正则错误：{str(e)}"
+        return f"匹配结果：{', '.join(matched_options) if matched_options else '无匹配项'}"
+
+
+    def generate_regex(self, preset, keyword, ignore_case, escape_special_chars, custom_regex="", preview_test_text=""):
+        self.ignore_case = ignore_case
+        self.custom_regex = custom_regex
+        keyword = keyword.strip() if keyword else ""
+        processed_keyword = re.escape(keyword) if escape_special_chars and keyword else keyword
+        keyword_list = [k.strip() for k in processed_keyword.split('|') if k.strip()]
+        case_flag = "i" if ignore_case else ""
+        regex_map = {
+            "排除空内容": rf"/.+/{case_flag}",
+            "排除空+纯空白": rf"/^\S+/{case_flag}",
+            "包含关键词": rf"/{processed_keyword}/{case_flag}" if keyword else rf"/.+/{case_flag}",
+            "不包含关键词": rf"/^(?!.*{processed_keyword}).*$/{case_flag}" if keyword else rf"/.+/{case_flag}",
+            "以关键词开头": rf"/^{processed_keyword}/{case_flag}" if keyword else rf"/.+/{case_flag}",
+            "以关键词结尾": rf"/{processed_keyword}$/{case_flag}" if keyword else rf"/.+/{case_flag}",
+            "多关键词包含(或)": rf"/{'|'.join(keyword_list)}/{case_flag}" if keyword_list else rf"/.+/{case_flag}",
+            "多关键词包含(且)": rf"/^(?=.*{')(?=.*'.join(keyword_list)}).*$/{case_flag}" if keyword_list else rf"/.+/{case_flag}",
+            "批量排除关键词": rf"/^(?!.*({'|'.join(keyword_list)})).*$/{case_flag}" if keyword_list else rf"/.+/{case_flag}",
+            "匹配数字": rf"/\d+/{case_flag}",
+            "匹配字母": rf"/[a-zA-Z]+/{case_flag}",
+            "匹配中文": rf"/[\u4e00-\u9fa5]+/{case_flag}",
+            "匹配数字+字母": rf"/[a-zA-Z0-9]+/{case_flag}",
+            "排除特定值": rf"/^(?!{processed_keyword}$).*$/{case_flag}" if keyword else rf"/.+/{case_flag}",
+            "仅匹配特定值": rf"/^{processed_keyword}$/{case_flag}" if keyword else rf"/.+/{case_flag}",
+            "匹配文件名开头数字": rf"/^\d+/{case_flag}",
+            "匹配文件名结尾数字": rf"/\d{{2}}(?=\.\w+$)/{case_flag}",
+            "匹配括号中的数字": rf"/\((\d+)\)/{case_flag}",
+            "自定义": rf"/{custom_regex}/{case_flag}" if custom_regex else rf"/.+/{case_flag}"
+        }
+        final_regex = regex_map.get(preset, rf"/.+/{case_flag}")
+        rule_desc = self.get_rule_desc(preset, keyword, ignore_case)
+        if preview_test_text:
+            preview_result = self.preview_regex_effect(final_regex, preview_test_text)
+            rule_desc += f"\n{preview_result}"
+        return (final_regex, rule_desc)
+
+
+
+
+class IO_LoadShotBatch:
+    _last_preview_hash_by_node: dict = {}
+    _thumb_cache_by_node: dict = {}
+    INPUT_IS_LIST = True
+
+    def _first_scalar(self, v, default=None):
+        if isinstance(v, list):
+            return v[0] if len(v) > 0 else default
+        return v
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "shot_state": ("STRING", {"multiline": True, "default": "[]"}),
+                "shot_preview": ("STRING", {"multiline": True, "default": "[]"}),
+                "card_size": ("INT", {"default": 120, "min": 120, "max": 520, "step": 20}),
+            },
+            "optional": {
+                "shot": ("SHOTINFO", {"forceInput": True}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    NAME = "IO_LoadShotBatch"
+    CATEGORY = "Apt_Preset/IO_Port/batch_input"
+    RETURN_TYPES = ("IMAGE", "STRING", "INT", "INT")
+    RETURN_NAMES = ("img_index", "text_index", "index", "total")
+    FUNCTION = "load_shot_list"
+    OUTPUT_NODE = True
+
+    def _safe_json_list(self, raw):
+        if raw is None:
+            return []
+        try:
+            v = json.loads(str(raw))
+            return v if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def _tensor_to_data_url(self, image_tensor, max_dim: int) -> str:
+        if image_tensor is None or not isinstance(image_tensor, torch.Tensor):
+            return ""
+        t = image_tensor
+        try:
+            if t.dim() == 4:
+                t = t[0]
+            if t.device.type != "cpu":
+                t = t.detach().cpu()
+            t = t.clamp(0, 1)
+            arr = (t.numpy() * 255.0).astype(np.uint8)
+            if arr.ndim != 3 or arr.shape[-1] not in (1, 3, 4):
+                return ""
+            if arr.shape[-1] == 1:
+                arr = np.repeat(arr, 3, axis=-1)
+            if arr.shape[-1] == 4:
+                img = Image.fromarray(arr, mode="RGBA").convert("RGB")
+            else:
+                img = Image.fromarray(arr, mode="RGB")
+            if max_dim and max_dim > 0:
+                img.thumbnail((int(max_dim), int(max_dim)), Image.BILINEAR)
+            buf = io.BytesIO()
+            if int(max_dim or 0) > 256:
+                img.save(buf, format="JPEG", quality=85, optimize=False)
+                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                return "data:image/jpeg;base64," + b64
+            img.save(buf, format="PNG", optimize=False)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return "data:image/png;base64," + b64
+        except Exception:
+            return ""
+
+    def _thumb_fingerprint(self, image_tensor) -> str:
+        if image_tensor is None or not isinstance(image_tensor, torch.Tensor):
+            return ""
+        t = image_tensor
+        try:
+            if t.dim() == 4:
+                t = t[0]
+            if t.dim() != 3:
+                return ""
+            c = int(t.shape[-1]) if t.shape[-1] is not None else 0
+            if c < 1:
+                return ""
+            hh = min(8, int(t.shape[0]))
+            ww = min(8, int(t.shape[1]))
+            cc = min(3, c)
+            patch = t[:hh, :ww, :cc]
+            if patch.device.type != "cpu":
+                patch = patch.detach().cpu()
+            patch = patch.clamp(0, 1)
+            arr = (patch.numpy() * 255.0).astype(np.uint8)
+            return hashlib.sha256(arr.tobytes()).hexdigest()[:12]
+        except Exception:
+            return ""
+
+    def _thumb_cached(self, node_uid: str, fp: str, image_tensor, max_dim: int) -> str:
+        if not node_uid:
+            return self._tensor_to_data_url(image_tensor, max_dim)
+        if not fp:
+            return self._tensor_to_data_url(image_tensor, max_dim)
+        cache = self._thumb_cache_by_node.setdefault(str(node_uid), {})
+        key = (str(fp), int(max_dim or 0))
+        try:
+            v = cache.get(key)
+            if isinstance(v, str) and v.startswith("data:image/"):
+                return v
+        except Exception:
+            pass
+        v = self._tensor_to_data_url(image_tensor, max_dim)
+        if v:
+            cache[key] = v
+            while len(cache) > 64:
+                try:
+                    cache.pop(next(iter(cache)))
+                except Exception:
+                    break
+        return v
+
+    def _apply_state(self, shots: list, shot_state_raw):
+        state = self._safe_json_list(shot_state_raw)
+        state_by_orig = {}
+        order = []
+        for x in state:
+            if not isinstance(x, dict):
+                continue
+            oi = x.get("orig_index", None)
+            try:
+                oi = int(oi)
+            except Exception:
+                oi = None
+            if oi is None or oi < 0:
+                continue
+            state_by_orig[oi] = x
+            order.append(oi)
+
+        max_i = len(shots) - 1
+        order = [x for x in order if x <= max_i]
+
+        used = set()
+        out = []
+
+        def apply_one(shot_item: dict, st: dict):
+            if not isinstance(shot_item, dict):
+                return shot_item
+            if not isinstance(st, dict):
+                return shot_item
+            if st.get("removed", False):
+                return None
+            title = st.get("title", None)
+            content = st.get("content", None)
+            if title is None and content is None:
+                return shot_item
+            merged = dict(shot_item)
+            if title is not None:
+                merged["title"] = "" if title is None else str(title)
+            if content is not None:
+                merged["content"] = "" if content is None else str(content)
+            return merged
+
+        for oi in order:
+            used.add(oi)
+            shot_item = shots[oi]
+            st = state_by_orig.get(oi, {})
+            merged = apply_one(shot_item, st)
+            if merged is not None:
+                out.append({"orig_index": oi, "shot": merged})
+
+        for i, shot_item in enumerate(shots):
+            if i in used:
+                continue
+            if not isinstance(shot_item, dict):
+                continue
+            st = state_by_orig.get(i, None)
+            merged = apply_one(shot_item, st)
+            if merged is not None:
+                out.append({"orig_index": i, "shot": merged})
+
+        return out
+
+    def _push_preview(self, unique_id: str, ordered: list, card_size: int):
+        if not unique_id:
+            return
+        try:
+            size = int(card_size)
+        except Exception:
+            size = 220
+        max_dim = max(192, min(768, size * 2))
+
+        items = []
+        hash_items = []
+        for row in ordered:
+            if not isinstance(row, dict):
+                continue
+            oi = row.get("orig_index", None)
+            try:
+                oi = int(oi)
+            except Exception:
+                continue
+            s = row.get("shot", None)
+            if not isinstance(s, dict):
+                continue
+            title = "" if s.get("title") is None else str(s.get("title"))
+            content = "" if s.get("content") is None else str(s.get("content"))
+            img = s.get("image", None)
+            shape = None
+            try:
+                if isinstance(img, torch.Tensor):
+                    shape = list(img.shape)
+            except Exception:
+                shape = None
+            fp = self._thumb_fingerprint(img) if isinstance(img, torch.Tensor) else ""
+            hash_items.append([oi, title, content, shape, fp])
+            items.append(
+                {
+                    "orig_index": oi,
+                    "title": title,
+                    "content": content,
+                    "thumb": self._thumb_cached(unique_id, fp, img, max_dim),
+                    "fp": fp,
+                }
+            )
+
+        try:
+            h = hashlib.sha256(
+                json.dumps({"card_size": size, "items": hash_items}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            h = None
+        if h is not None and self._last_preview_hash_by_node.get(unique_id) == h:
+            return
+        if h is not None:
+            self._last_preview_hash_by_node[unique_id] = h
+
+        try:
+            ps = getattr(PromptServer, "instance", None)
+            if ps is not None and hasattr(ps, "send_sync"):
+                ps.send_sync("IO_LoadShotBatch_set", {"node": unique_id, "items": items, "card_size": size})
+        except Exception:
+            pass
+
+    def load_shot_list(
+        self,
+        shot_state: str = "[]",
+        shot_preview: str = "[]",
+        shot=None,
+        img_list=None,
+        text_list=None,
+        index: int = 0,
+        card_size: int = 120,
+        unique_id: str = "",
+    ):
+        shot_state = self._first_scalar(shot_state, "[]")
+        shot_preview = self._first_scalar(shot_preview, "[]")
+        index = self._first_scalar(index, 0)
+        card_size = self._first_scalar(card_size, 120)
+        unique_id = self._first_scalar(unique_id, "")
+        if unique_id is None:
+            unique_id = ""
+        if unique_id != "":
+            unique_id = str(unique_id)
+
+        reset_preview = False
+        try:
+            sp = "" if shot_preview is None else str(shot_preview).strip()
+            if sp == "" or sp == "[]":
+                reset_preview = True
+        except Exception:
+            reset_preview = False
+
+        def _flatten_list(v):
+            if v is None:
+                return []
+            if isinstance(v, list):
+                out = []
+                for e in v:
+                    if isinstance(e, list):
+                        out.extend(e)
+                    else:
+                        out.append(e)
+                return out
+            return [v]
+
+        def _split_image_tensor(t):
+            if not isinstance(t, torch.Tensor):
+                return []
+            try:
+                if t.dim() == 4 and int(t.shape[0]) > 1:
+                    return [t[i : i + 1] for i in range(int(t.shape[0]))]
+                if t.dim() == 3:
+                    return [t.unsqueeze(0)]
+                return [t]
+            except Exception:
+                return [t]
+
+        def _extract_image_tensors(v):
+            out = []
+            for e in _flatten_list(v):
+                if isinstance(e, torch.Tensor):
+                    out.extend(_split_image_tensor(e))
+                    continue
+                if isinstance(e, dict):
+                    img = e.get("image", None)
+                    if isinstance(img, torch.Tensor):
+                        out.extend(_split_image_tensor(img))
+                    continue
+                if isinstance(e, (tuple, list)) and len(e) >= 1:
+                    img0 = e[0]
+                    if isinstance(img0, torch.Tensor):
+                        out.extend(_split_image_tensor(img0))
+            return out
+
+        shots_in = []
+        for e in _flatten_list(shot):
+            if isinstance(e, dict):
+                shots_in.append(e)
+            elif isinstance(e, list):
+                for x in e:
+                    if isinstance(x, dict):
+                        shots_in.append(x)
+
+        imgs = _extract_image_tensors(img_list)
+
+        texts = []
+        for e in _flatten_list(text_list):
+            if e is None:
+                continue
+            if isinstance(e, list):
+                for x in e:
+                    if x is not None:
+                        texts.append(str(x))
+            else:
+                s = str(e)
+                st = s.strip()
+                if st.startswith("[") and st.endswith("]"):
+                    try:
+                        v = json.loads(s)
+                        if isinstance(v, list):
+                            for x in v:
+                                if x is not None:
+                                    texts.append(str(x))
+                            continue
+                    except Exception:
+                        pass
+                texts.append(s)
+
+        n = max(len(imgs), len(texts))
+        if n > 0:
+            blank_image = None
+            if len(imgs) > 0:
+                try:
+                    ref = imgs[0]
+                    if isinstance(ref, torch.Tensor) and ref.dim() == 4 and int(ref.shape[0]) >= 1:
+                        blank_image = torch.zeros_like(ref[0:1])
+                except Exception:
+                    blank_image = None
+            if blank_image is None:
+                blank_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            for j in range(n):
+                img = imgs[j] if j < len(imgs) and isinstance(imgs[j], torch.Tensor) else blank_image
+                txt = texts[j] if j < len(texts) else ""
+                shots_in.append(
+                    {
+                        "title": "",
+                        "content": txt,
+                        "image": img,
+                    }
+                )
+
+        ordered = self._apply_state(shots_in, shot_state)
+        if reset_preview and unique_id:
+            try:
+                if unique_id in self._last_preview_hash_by_node:
+                    del self._last_preview_hash_by_node[unique_id]
+            except Exception:
+                pass
+        self._push_preview(unique_id, ordered, card_size)
+
+        total = len(ordered)
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        if i < 0:
+            i = 0
+        if total == 0:
+            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), "", 0, 0)
+        if i >= total:
+            i = total - 1
+
+        row = ordered[i]
+        shot_item = row.get("shot", {}) if isinstance(row, dict) else {}
+        img = shot_item.get("image", None) if isinstance(shot_item, dict) else None
+        if isinstance(img, torch.Tensor):
+            output_image = img
+        else:
+            output_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        title = "" if not isinstance(shot_item, dict) else shot_item.get("title", "") or ""
+        content = "" if not isinstance(shot_item, dict) else shot_item.get("content", "") or ""
+        output_text = f"{title}\n{content}" if title else str(content)
+        return (output_image, str(output_text), int(i), int(total))
+
+    @classmethod
+    def IS_CHANGED(
+        s,
+        shot_state: str = "[]",
+        shot_preview: str = "[]",
+        shot=None,
+        img_list=None,
+        text_list=None,
+        index: int = 0,
+        card_size: int = 120,
+    ):
+        m = hashlib.sha256()
+        if isinstance(shot_state, list):
+            shot_state = shot_state[0] if len(shot_state) > 0 else "[]"
+        if isinstance(shot_preview, list):
+            shot_preview = shot_preview[0] if len(shot_preview) > 0 else "[]"
+        if isinstance(index, list):
+            index = index[0] if len(index) > 0 else 0
+        if isinstance(card_size, list):
+            card_size = card_size[0] if len(card_size) > 0 else 120
+
+        m.update((shot_state or "").encode("utf-8"))
+        if shot is not None:
+            if isinstance(shot, list):
+                for item in shot:
+                    if isinstance(item, dict):
+                        content = item.get("content", "")
+                        title = item.get("title", "")
+                        m.update((content or "").encode("utf-8"))
+                        m.update((title or "").encode("utf-8"))
+            elif isinstance(shot, dict):
+                content = shot.get("content", "")
+                title = shot.get("title", "")
+                m.update((content or "").encode("utf-8"))
+                m.update((title or "").encode("utf-8"))
+        if text_list is not None:
+            if isinstance(text_list, list):
+                for t in text_list:
+                    if isinstance(t, list):
+                        for x in t:
+                            m.update((str(x) if x is not None else "").encode("utf-8"))
+                    else:
+                        m.update((str(t) if t is not None else "").encode("utf-8"))
+            else:
+                m.update((str(text_list) if text_list is not None else "").encode("utf-8"))
+        if img_list is not None:
+            try:
+                if isinstance(img_list, list):
+                    m.update(str(len(img_list)).encode("utf-8"))
+                else:
+                    m.update(b"1")
+            except Exception:
+                pass
+        m.update(str(index).encode("utf-8"))
+        m.update(str(card_size).encode("utf-8"))
+        return m.digest().hex()
+
+
+
+
+class IO_ShotCreate:
+    @classmethod
+    def INPUT_TYPES(s):
+
+        input_dir = folder_paths.get_input_directory()
+        if not os.path.exists(input_dir):
+            return {"required": {}}
+
+        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
+        files = folder_paths.filter_files_content_types(files, ["image"])
+
+        return {
+            "required": {
+                "shot_duration": ("INT", {"default": 5, "min": 1, "max": 600, "step": 1}),
+                "shot_title": ("STRING", {"default": "待输入……", "multiline": False}),
+                "shot_scale": (["None", "中景", "近景", "全景", "远景", "特写", "大特写", "中近景", "前景", "后景"], {"default": "None"}),
+                "camera_movement": (["None", "固定", "推镜头", "拉镜头", "摇镜头", "移镜头", "跟随", "升降", "旋转", "航拍", "摇移组合", "俯拍", "仰拍", "荷兰角度", "主观镜头", "稳定镜头", "手持摇晃"], {"default": "None"}),               
+                "transition_effect": (["None", "硬切", "淡入淡出", "叠化", "zoom in", "zoom out", "划像", "百叶窗", "旋转转场", "推拉转场", "模糊转场", "闪光转场", "粒子转场", "渐显", "渐隐", "闪白", "闪黑", "溶解", "擦除", "缩放转场", "位移转场", "扭曲转场", "光晕转场", "故障转场", "水墨转场", "光效转场"], {"default": "None"}),
+                "scene_description": ("STRING", {"default": "", "multiline": True}),
+                "image": (sorted(files), {"image_upload": True}),
+            },
+            "optional": {
+                "shot": ("SHOTINFO",),
+            },
+        }
+
+    NAME = "IO_ShotCreate"
+    CATEGORY = "Apt_Preset/IO_Port"
+    RETURN_TYPES = ("SHOTINFO",)
+    RETURN_NAMES = ("shot",)
+    FUNCTION = "generate_shot_info"
+    OUTPUT_NODE = False
+
+    def generate_shot_info(
+        self,
+        shot_duration: int,
+        shot_title: str,
+        shot_scale: str,
+        camera_movement: str,
+        transition_effect: str,
+        scene_description: str,
+        image,
+        shot=None,
+    ):
+        # 格式化内容字符串
+        content_parts = [f"时长{shot_duration}秒"]
+        if shot_scale != "None":
+            content_parts.append(f"{shot_scale}镜头")
+        if camera_movement != "None":
+            content_parts.append(f"采用{camera_movement}运镜")
+        if transition_effect != "None":
+            content_parts.append(f"通过{transition_effect}转场")
+        content_parts.append(f"画面内容为：{scene_description}")
+        content = "，".join(content_parts) + "。"
+
+        image_path = folder_paths.get_annotated_filepath(image)
+        img = node_helpers.pillow(Image.open, image_path)
+
+        output_images = []
+        output_masks = []
+        w, h = None, None
+
+        for i in ImageSequence.Iterator(img):
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+
+            if i.mode == 'I':
+                i = i.point(lambda i: i * (1 / 255))
+            image_rgb = i.convert("RGB")
+
+            if len(output_images) == 0:
+                w = image_rgb.size[0]
+                h = image_rgb.size[1]
+
+            if image_rgb.size[0] != w or image_rgb.size[1] != h:
+                continue
+
+            image_rgb = np.array(image_rgb).astype(np.float32) / 255.0
+            image_rgb = torch.from_numpy(image_rgb)[None,]
+            if 'A' in i.getbands():
+                mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+            elif i.mode == 'P' and 'transparency' in i.info:
+                mask = np.array(i.convert('RGBA').getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+            else:
+                mask = torch.zeros((64,64), dtype=torch.float32, device="cpu")
+            output_images.append(image_rgb)
+            output_masks.append(mask.unsqueeze(0))
+
+            if img.format == "MPO":
+                break  # ignore all frames except the first one for MPO format
+
+        if len(output_images) > 1:
+            output_image = torch.cat(output_images, dim=0)
+            output_mask = torch.cat(output_masks, dim=0)
+        else:
+            output_image = output_images[0]
+            output_mask = output_masks[0]
+
+        # 创建当前shot信息
+        current_shot = {
+            "content": content,
+            "title": shot_title,
+            "image": output_image,
+            "mask": output_mask,
+            "shot_duration": shot_duration,
+            "shot_scale": shot_scale,
+            "camera_movement": camera_movement,
+            "transition_effect": transition_effect,
+            "scene_description": scene_description,
+        }
+
+        # 如果有输入的shot列表，追加；否则创建新列表
+        if shot is not None and isinstance(shot, list):
+            shot_list = shot.copy()
+            shot_list.append(current_shot)
+        else:
+            shot_list = [current_shot]
+
+        return (shot_list,)
+
+    @classmethod
+    def IS_CHANGED(
+        s,
+        shot_duration: int,
+        shot_title: str,
+        shot_scale: str,
+        camera_movement: str,
+        transition_effect: str,
+        scene_description: str,
+        image,
+        shot=None,
+    ):
+
+        m = hashlib.sha256()
+        m.update(str(shot_duration).encode("utf-8"))
+        m.update((shot_title or "").encode("utf-8"))
+        m.update(shot_scale.encode("utf-8"))
+        m.update(camera_movement.encode("utf-8"))
+        m.update(transition_effect.encode("utf-8"))
+        m.update((scene_description or "").encode("utf-8"))
+        if folder_paths.exists_annotated_filepath(image):
+            image_path = folder_paths.get_annotated_filepath(image)
+            if os.path.isfile(image_path):
+                with open(image_path, 'rb') as f:
+                    m.update(f.read())
+        return m.digest().hex()
+
+    @classmethod
+    def VALIDATE_INPUTS(
+        s,
+        shot_duration: int,
+        shot_title: str,
+        shot_scale: str,
+        camera_movement: str,
+        transition_effect: str,
+        scene_description: str,
+        image,
+        shot=None,
+    ):
+        if not folder_paths.exists_annotated_filepath(image):
+            return "Invalid image file: {}".format(image)
+        return True
+
+
+
+
+
+
+
+
+
+class view_node_Script:
+    def __init__(self):
+        self.node_list = []
+        self.custom_node_list = []
+        self.update_node_list()
+
+    def update_node_list(self):
+        try:
+            import nodes
+            self.node_list = []
+            self.custom_node_list = []
+            
+            for node_name, node_class in nodes.NODE_CLASS_MAPPINGS.items():
+                try:
+                    module = inspect.getmodule(node_class)
+                    module_path = getattr(module, '__file__', '')
+                    is_custom = 'custom_nodes' in module_path
+
+                    node_info = {
+                        'name': node_name,
+                        'class_name': node_class.__name__,
+                        'category': getattr(node_class, 'CATEGORY', 'Uncategorized'),
+                        'description': getattr(node_class, 'DESCRIPTION', ''),
+                        'is_custom': is_custom
+                    }
+                    
+                    self.node_list.append(node_info)
+                    if is_custom:
+                        self.custom_node_list.append(node_info)
+                except Exception as e:
+                    logging.error(f"Error processing node {node_name}: {str(e)}")
+                    continue
+            
+            self.node_list.sort(key=lambda x: x['name'])
+            self.custom_node_list.sort(key=lambda x: x['name'])
+            
+        except Exception as e:
+            logging.error(f"Error updating node list: {str(e)}")
+            traceback.print_exc()
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        try:
+            import nodes
+            node_names = sorted(list(nodes.NODE_CLASS_MAPPINGS.keys()))
+            if not node_names:
+                node_names = ["No nodes found"]
+                
+            return {
+                "required": {
+                    "selected_node": (node_names, {
+                        "default": node_names[0]
+                    }),
+                },
+                "optional": {
+                    "ANY": (ANY_TYPE, {}),
+                    "data": ("STRING", {"default": "", "multiline": True}),
+                },
+                "hidden": {
+                    "unique_id": "UNIQUE_ID",
+                    "extra_pnginfo": "EXTRA_PNGINFO",
+                },
+            }
+        except Exception as e:
+            print(f"Error in INPUT_TYPES: {str(e)}")
+            return {
+                "required": {
+                    "selected_node": (["No nodes found"], {
+                        "default": "No nodes found"
+                    }),
+                },
+                "optional": {
+                    "ANY": (ANY_TYPE, {}),
+                    "data": ("STRING", {"default": "", "multiline": True}),
+                },
+                "hidden": {
+                    "unique_id": "UNIQUE_ID",
+                    "extra_pnginfo": "EXTRA_PNGINFO",
+                },
+            }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("node_source",)
+    OUTPUT_NODE = True
+    FUNCTION = "find_script"
+    CATEGORY = "Apt_Preset/PreView"
+
+    def get_node_source_code(self, node_name):
+        try:
+            import nodes
+            import inspect
+            import os
+
+            node_class = nodes.NODE_CLASS_MAPPINGS.get(node_name)
+            if not node_class:
+                return f"Node '{node_name}' not found"
+
+            module = inspect.getmodule(node_class)
+            if not module:
+                return f"Could not find module for {node_name}"
+
+            try:
+                file_path = inspect.getfile(module)
+            except TypeError:
+                return f"Could not determine file path for {node_name}"
+
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+            except Exception as e:
+                return f"Error reading file: {str(e)}"
+
+            class_def = f"class {node_class.__name__}:"
+            class_start = file_content.find(class_def)
+            
+            if class_start == -1:
+                return f"Could not find class definition for {node_name}"
+
+            lines = file_content[class_start:].split('\n')
+            class_lines = []
+            indent_level = None
+
+            for line in lines:
+                if indent_level is None:
+                    if line.strip().startswith('class'):
+                        indent_level = len(line) - len(line.lstrip())
+                    continue
+
+                current_indent = len(line) - len(line.lstrip())
+                if current_indent <= indent_level and line.strip():
+                    break
+
+                class_lines.append(line)
+
+            source_output = f"=== Node: {node_name} ===\n"
+            source_output += f"File: {file_path}\n\n"
+            source_output += "=== Source Code ===\n"
+            source_output += "\n".join(class_lines)
+
+            return source_output
+
+        except Exception as e:
+            return f"Error retrieving source code: {str(e)}"
+
+    def _resolve_upstream_node_type(self, unique_id, extra_pnginfo):
+        workflow = extra_pnginfo.get("workflow", {}) if isinstance(extra_pnginfo, dict) else {}
+        node_list = workflow.get("nodes", [])
+        links = workflow.get("links", [])
+        cur_node = next((n for n in node_list if str(n.get("id")) == str(unique_id)), None)
+        if cur_node is None:
+            return None, "Current node not found in workflow metadata"
+        inputs = cur_node.get("inputs", [])
+        first_link_id = None
+        if isinstance(inputs, list):
+            for item in inputs:
+                if isinstance(item, dict) and item.get("link") is not None:
+                    first_link_id = item.get("link")
+                    break
+        if first_link_id is None:
+            return None, "No upstream link found. Please connect an input."
+        link = next((l for l in links if isinstance(l, list) and len(l) > 2 and l[0] == first_link_id), None)
+        if link is None:
+            return None, "Upstream link metadata not found"
+        upstream_node_id = link[1]
+        upstream_node = next((n for n in node_list if n.get("id") == upstream_node_id), None)
+        if upstream_node is None:
+            return None, "Upstream node not found in workflow metadata"
+        upstream_type = str(upstream_node.get("type", "")).strip()
+        if len(upstream_type) == 0:
+            return None, "Upstream node type is empty"
+        return upstream_type, None
+
+    def _get_class_source(self, node_type):
+        import nodes
+        node_class = nodes.NODE_CLASS_MAPPINGS.get(node_type)
+        if node_class is None:
+            return f"Node type '{node_type}' is not in NODE_CLASS_MAPPINGS"
+        try:
+            module = inspect.getmodule(node_class)
+            file_path = inspect.getfile(module) if module is not None else "Unknown file"
+        except Exception:
+            file_path = "Unknown file"
+        try:
+            source = inspect.getsource(node_class)
+        except Exception:
+            source = f"Could not read source for class '{node_class.__name__}'"
+        source_output = f"=== Upstream Node: {node_type} ===\n"
+        source_output += f"Class: {node_class.__name__}\n"
+        source_output += f"File: {file_path}\n\n"
+        source_output += "=== Source Code ===\n"
+        source_output += source
+        return source_output
+
+    def find_script(self, selected_node, ANY=None, data="", unique_id=None, extra_pnginfo=None):
+        try:
+            self.update_node_list()
+
+            source_code = ""
+            if unique_id is not None and extra_pnginfo is not None:
+                upstream_type, error = self._resolve_upstream_node_type(unique_id, extra_pnginfo)
+                if error is None and upstream_type is not None:
+                    source_code = self._get_class_source(upstream_type)
+            
+            if not source_code and selected_node:
+                source_code = self.get_node_source_code(selected_node)
+            
+            if not source_code:
+                source_code = "Please select a node to view its source code"
+
+            updateTextWidget(unique_id, "data", source_code)
+            return comfy_api_io.NodeOutput(source_code, ui={"data": [source_code]})
+
+        except Exception as e:
+            logging.error(f"Error in find_script: {str(e)}")
+            traceback.print_exc()
+            err_msg = traceback.format_exc()
+            updateTextWidget(unique_id, "data", err_msg)
+            return comfy_api_io.NodeOutput(err_msg, ui={"data": [err_msg]})
+
+
+
+
+
+
+
+# ==================== 节点1：尺寸帧率传递 ====================
+class basicIn_Vedio:
+    CATEGORY = "Apt_Preset/IO_Port"
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "width": ("INT", {"default": 512, "min": 1, "max": 8192}),
+                "height": ("INT", {"default": 512, "min": 1, "max": 8192}),
+                "length": ("INT", {"default": 16, "min": 1, "max": 9999}),
+                "frame_rate": ("INT", {"default": 24, "min": 1, "max": 120}),
+            }
+        }
+    
+    RETURN_TYPES = ("INT", "INT", "INT", "INT")
+    RETURN_NAMES = ("width", "height", "length", "frame_rate")
+    FUNCTION = "forward"
+    
+    def forward(self, width, height, length, frame_rate):
+        return (width, height, length, frame_rate)
+
+
+from nodes import  CLIPTextEncode
+
+class basicIn_clip:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "clip": ("CLIP",),
+                "positive": ("STRING", {"multiline": True, }),
+                "negative": ("STRING", {"multiline": False, }),
+            }
+        }
+    
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("positive", "negative")
+    FUNCTION = "encode"
+    CATEGORY = "Apt_Preset/IO_Port"
+
+    def encode(self, clip, positive, negative):
+        if clip is not None:
+            (positive,) = CLIPTextEncode().encode(clip, positive)
+            (negative,) = CLIPTextEncode().encode(clip, negative)
+        else:
+            positive = None
+            negative = None       
+
+        return (positive, negative)
