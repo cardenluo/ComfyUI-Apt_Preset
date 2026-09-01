@@ -11,6 +11,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 # I. Update Record
 
+2026.9.1  add new node flow_stage_begin,flow_stage_end, New loop body. Each loop starts completely fresh and will never run out of video memory or system memory.
 
 2026.8.08   add new node : AD_MiniMax_guide  , A simple and efficient way of working
 
