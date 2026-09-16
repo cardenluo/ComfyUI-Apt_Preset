@@ -11,9 +11,9 @@ The current workflow connections are becoming increasingly dense, making them di
 
 # I. Update Record
 
-2026.9.1  add new node flow_stage_begin,flow_stage_end, New loop body. Each loop starts completely fresh and will never run out of video memory or system memory.
+2026.9.16  Add new node "media edit", support material sharing, and link automatic segmentation and automatic time allocation
 
-2026.8.08   add new node : AD_MiniMax_guide  , A simple and efficient way of working
+<img width="1438" height="731" alt="ec079aad3a6e53fe02eaeab5ac51e138" src="https://github.com/user-attachments/assets/4d8ecaec-ecd0-47a0-a015-2e00ec1cacd5" />
 
 <img width="2639" height="1309" alt="image" src="https://github.com/user-attachments/assets/a6a2130e-e877-4d2a-a254-5344c5fd16c3" />
 
