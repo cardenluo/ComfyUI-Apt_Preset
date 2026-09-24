@@ -1,0 +1,100 @@
+Tim Thomerson
+Fred Ward
+Bruce Campbell
+Lance Henriksen
+Michael Biehn
+Reggie Bannister
+Ken Foree
+Keith David
+Thomas Jane
+Mark Hamill
+Peter Jason
+Tom Atkins
+Adam Baldwin
+Andrew Divoff
+Robert Forster
+Christopher Lambert
+Corey Feldman
+Clancy Brown
+Rutger Hauer
+Michael Ironside
+Marshall Bell
+Mitch Pileggi
+Peter Weller
+Bill Paxton
+Vernon Wells
+John C. McGinley
+Charles S. Dutton
+Kevin J. O'Connor
+Tom Savini
+Brad Dourif
+Danny Trejo
+Jeff Fahey
+Treat Williams
+Robert Englund
+Donald Pleasence
+Joseph Pilato
+Robert Patrick
+Michael Rooker
+Bill Moseley
+Tony Todd
+Tom Towles
+James Hong
+Doug Bradley
+Chris Sarandon
+Anthony Perkins
+Andy Serkis
+Roddy McDowall
+Ted Raimi
+Donnie Yen
+Ron Perlman
+David Carradine
+James Remar
+Dennis Hopper
+Mario Van Peebles
+Tom Lister Jr.
+Emilio Estevez
+Sid Haig
+David Patrick Kelly
+William Sadler
+Dominique Pinon
+Brion James
+Tobin Bell
+Stephen Geoffreys
+Brian Thompson
+Paul Winfield
+Zakes Mokae
+Robert John Burke
+John Rhys-Davies
+Thom Mathews
+William Hickey
+Thomas Rosales Jr.
+Robert Davi
+George 'Buck' Flower
+Angus Scrimm
+Hugh Quarshie
+Craig Sheffer
+Jeffrey Jones
+Wes Studi
+Trevor Goddard
+Cary-Hiroyuki Tagawa
+Victor Wong
+Michael Wincott
+Daniel von Bargen
+Sean Pertwee
+Gary Busey
+Mark Boone Junior
+Craig Fairbrass
+James Karen
+Clu Gulager
+Miguel A. Núñez Jr.
+Sam Neill
+Michael Gross
+Steve Railsback
+Michael Massee
+Willem Dafoe
+Arnold Vosloo
+Reb Brown
+Lou Diamond Phillips
+Miguel Ferrer
+Tim Daly
