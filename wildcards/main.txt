@@ -1,3 +1,0 @@
-A @@color @@animal in a @@location
-@@weather scene with a @@object
-@@character wearing @@clothing

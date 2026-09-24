@@ -1,8 +1,0 @@
-dog
-cat
-horse
-elephant
-giraffe
-penguin
-koala
-@@bird

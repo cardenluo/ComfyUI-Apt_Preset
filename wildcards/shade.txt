@@ -1,8 +1,0 @@
-light
-dark
-pale
-bright
-deep
-soft
-rich
-vivid

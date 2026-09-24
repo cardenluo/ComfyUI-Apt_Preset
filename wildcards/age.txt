@@ -1,7 +1,0 @@
-young
-old
-middle-aged
-teen
-baby
-child
-infant

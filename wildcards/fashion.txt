@@ -1,9 +1,0 @@
-Hip-hop
-Victorian
-Goth
-Punk
-Tomboy
-Girly
-Boho
-Preppy
-Gangster

@@ -1,6 +1,0 @@
-radiant
-glowing
-glossy
-sparkles
-lens flare
-reflective

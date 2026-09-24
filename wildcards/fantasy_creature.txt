@@ -1,8 +1,0 @@
-unicorn
-dragon
-phoenix
-griffin
-centaur
-pegasus
-chimera
-basilisk

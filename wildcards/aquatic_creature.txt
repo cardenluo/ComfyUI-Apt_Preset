@@ -1,8 +1,0 @@
-@@size whale
-colorful @@tropical_fish
-graceful manta ray
-playful dolphin
-mysterious giant squid
-ancient @@prehistoric_sea_creature
-bioluminescent jellyfish
-@@mythical_sea_beast
