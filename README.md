@@ -11,7 +11,7 @@ The current workflow connections are becoming increasingly dense, making them di
 
 # I. Update Record
 
-2026.9.24  Add new node "sum_qwen_image2"
+2026.9.24  Add new node "sum_Qwenimage2"
 
 <img width="3014" height="1189" alt="image" src="https://github.com/user-attachments/assets/3af4fb19-8f82-4d2a-bdb5-cf353b1fa510" />
 
