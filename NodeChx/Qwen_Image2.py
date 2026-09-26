@@ -31,9 +31,11 @@ def _qwen2_parse_refs(prompt):
     return refs
 
 
-def _qwen2_strip_tags(prompt):
-    """把 prompt 中的 @<imageN> 标签去掉，交给模型 tokenizer 自动注入 <imageN> 唤醒块。"""
-    return _QWEN2_TAG_RE.sub("", str(prompt or ""))
+def _qwen2_normalize_tags(prompt):
+    """将界面引用标签转换为模型正文中的标准 <imageN> 指代。"""
+    return _QWEN2_TAG_RE.sub(
+        lambda match: f"<image{int(match.group(1))}>", str(prompt or "")
+    )
 
 
 def _qwen2_select_stage_prompt(stage_prompts, prompt, stage_index):
@@ -93,7 +95,7 @@ class sum_QwenImage2:
             "resolution": ("INT", {
                 "default": 1024, "min": 0, "max": 4096, "step": 32,
                 "tooltip": "把每张参考图缩放到 resolution x resolution 像素面积，"
-                          
+
             }),
             "width": ("INT", {
                 "default": 1024, "min": 32, "max": 4096, "step": 32,
@@ -226,10 +228,10 @@ class sum_QwenImage2:
             latent_w = max(32, int(width) if width else 1024)
             latent_h = max(32, int(height) if height else 1024)
 
-        clean_prompt = _qwen2_strip_tags(active_prompt)
+        model_prompt = _qwen2_normalize_tags(active_prompt)
         keep_vision = len(ref_latents) == 0
         positive = clip.encode_from_tokens_scheduled(
-            clip.tokenize(clean_prompt, images=images_vl, keep_vision=keep_vision, prevent_empty_text=True)
+            clip.tokenize(model_prompt, images=images_vl, keep_vision=keep_vision, prevent_empty_text=True)
         )
         negative = clip.encode_from_tokens_scheduled(
             clip.tokenize(negative_prompt, images=images_vl, keep_vision=keep_vision, prevent_empty_text=True)
