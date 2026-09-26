@@ -431,7 +431,7 @@ NODE_CLASS_MAPPINGS= {
 "Image_Resize_sum_restore":Image_Resize_sum_restore,     
 "Image_Pair_Merge": Image_Pair_Merge,  
 "Image_Pair_crop": Image_Pair_crop, 
-"Image_layer_mask_blend": Image_layer_mask_blend,
+
 
 
 
@@ -745,7 +745,7 @@ NODE_CLASS_MAPPINGS= {
 
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Image_layer_mask_blend": "Image_上下图层遮罩溶图",
+
     "AD_MinMax_Ref2_generate": "AD_MinMax_Ref2_generate弃用",
     "AD_MinMax_FL2_generate": "AD_MinMax_FL2_generate弃用",
 
