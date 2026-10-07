@@ -6023,7 +6023,10 @@ class AD_MinMax_Ref2_generate(_AD_MinMaxBase, _AD_MinMaxRef2GuideBase):
         missing = [name for name, value in (("clip", clip), ("vae", vae)) if value is None]
         if missing:
             raise ValueError(f"AD_MinMax_Ref2_generate context is missing: {', '.join(missing)}")
-        negative = _apt_default_negative(context.get("negative"), clip)
+        # Defer fallback negative encoding until after Ref2 reference preparation.
+        # This keeps large CLIP/text encoders resident for positive + negative encoding
+        # instead of loading CLIP, switching to VAE/audio-VAE work, then loading CLIP again.
+        negative = context.get("negative")
 
         items = self._collect_media(selected_kwargs)
         selected_context_latents = [item[2] for item in items if item[1] == "latent"]
@@ -6140,6 +6143,7 @@ class AD_MinMax_Ref2_generate(_AD_MinMaxBase, _AD_MinMaxRef2GuideBase):
             _allow_context_latent=True,
             **selected_kwargs,
         )
+        negative = _apt_default_negative(negative, clip)
         latent = dict(latent)
         latent["apt_h3_visible_length"] = visible_length
         if guide_context_latent is not None:
