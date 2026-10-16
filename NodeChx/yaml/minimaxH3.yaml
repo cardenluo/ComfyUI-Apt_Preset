@@ -1,0 +1,78 @@
+六段式模版:
+  negative: ''
+  prompt: 'subject_definitions:
+
+    # 先列主体(<Subject N>), 再列原始参考资产(<Picture/Video/Audio N>)。
+
+    <Subject 1> is the [主体身份] shown in <Picture 1>, including [关键视觉特征]。
+
+    <Subject 2> is the [第二个主体] shown in <Picture 1>, including [关键特征]。
+
+    # 多图补充局部时, 写 <Subject 1> is X shown in <Picture 1> with [outfit] from <Picture
+    2>。
+
+    <Picture 1> is [图片内容], used as the [角色主参考 / 场景参考 / 起帧参考]。
+
+    # "used as ..." 决定 retention_analysis 里的角色字段。
+
+
+    summary:
+
+    # 以 [reference generation] 开头, 一段话含: 时长 / 风格 / 镜头数 / 动作 / 氛围。
+
+    [reference generation] A [10-second] [cinematic 3D CG] video showing <Subject
+    1> [主要动作],
+
+    with <Subject 2> [次要动作]. The video uses [3] shots: [shot1], [shot2], [shot3].
+
+    The overall tone is [氛围词].
+
+
+    retention_analysis:
+
+    # 只能用 fully_preserved / strong_reference / weak_reference 三个等级。
+
+    <Subject 1> (appears in all shots, speaker: S1): fully_preserved — [面部, 发型, 服饰,
+    配色, 体型]。
+
+    <Subject 2> (appears in [Shots 2–3]): strong_reference — [保留核心特征, 允许调整动作]。
+
+    <Picture 1> ([Shot 1] starting frame): weak_reference — [仅构图参考, 可改角度/光照/配色]。
+
+
+    detailed_description:
+
+    # 第一个镜头 [Shot 1] 开头, 后续以 "At HH:MM.SSS, ..." 开头, 时间戳递增。
+
+    # 主体用 <Subject N>; 对话用 <d>[lang]文本</d>; 说话人用 (S1)。
+
+    [Shot 1] [风格], a [镜头类型] of [场景] from <Picture 1> starting frame, [调整说明].
+
+    [运镜] as <Subject 1> [动作], [外观细节] [附加动作].
+
+    [Shot 2] At 00:04.000, the camera cuts to [镜头类型] as <Subject 1> [动作].
+
+    [环境/光影]. (S1) says: <d>[语言]台词</d>. [附加动作/特效].
+
+    [Shot 3] At 00:07.500, the camera cuts to [镜头类型] as <Subject 1> [收尾动作].
+
+    [高潮/落幕].
+
+
+    overall_soundscape:
+
+    # 1–4 句英文, 只写环境音 + 动作音 + 非语言人声, 不写对话和 BGM。
+
+    [环境音]. [动作音]. [人物非语言声/能量音].
+
+
+    non_diegetic_music:
+
+    # 1–3 句英文, 写乐器/速度/节奏/动态, 不要重复 diegetic 音。
+
+    [乐器 + 速度], [附加乐器/动态变化], [与素材或镜头的对齐]。
+
+    # 无 BGM 时保留 N/A, 但建议加底噪增加情绪。
+
+
+    '
