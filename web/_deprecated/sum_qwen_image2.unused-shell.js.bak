@@ -1,0 +1,55 @@
+import { app } from "../../scripts/app.js";
+
+// sum_QwenImage2 完全复用 AD_MinMax_Ref2 的前端 UI 逻辑。
+// 所有素材台、stage_prompts 滚动、虚拟多图连线都由 minimax_guide_dual_ui40.js 提供。
+// 此文件只需做三件事：
+//   1) 不在 widgets_values 序列化路径上写 Ref2 专属字段（minimax_guide_dual_ui40.js 已为 sum_QwenImage2 加了分支）
+//   2) 在注册顺序上保证 minimax_guide_dual_ui40.js 先于本文件注册（同名 registerExtension 会合并）
+//   3) 给 properties 命名空间预置 stage_prompts 默认值，避免旧工作流没有这个字段时 UI 跳错
+//
+// video/audio 在 minimax_guide_dual_ui40.js 的 mediaLimits() 里被过滤掉（sum_QwenImage2 走 isQwen2Target 分支）。
+
+const NODE_CLASS = "sum_QwenImage2";
+const STAGE_PROMPT_DOCS_PROP = "ad_minimax_guide_stage_prompt_docs";
+const STAGE_PROMPT_INDEX_PROP = "ad_minimax_guide_stage_prompt_index";
+const STAGE_WIDGET_NAME = "stage_prompts";
+
+function isOurNode(node) {
+    return String(node?.comfyClass || node?.type || node?.constructor?.nodeData?.name || "") === NODE_CLASS;
+}
+
+function ensureStageDefaults(node) {
+    // minimax_guide_dual_ui40.js 的 ensureStagePromptDocs() 已经会兜底初始化，这里再补一道防御
+    node.properties ||= {};
+    if (!Array.isArray(node.properties[STAGE_PROMPT_DOCS_PROP])) {
+        const promptWidget = node.widgets?.find((w) => w.name === "prompt");
+        node.properties[STAGE_PROMPT_DOCS_PROP] = [{
+            prompt: String(promptWidget?.value || ""),
+            single_stage_time: 5.0,
+        }];
+    }
+    if (typeof node.properties[STAGE_PROMPT_INDEX_PROP] !== "number") {
+        node.properties[STAGE_PROMPT_INDEX_PROP] = 0;
+    }
+}
+
+app.registerExtension({
+    name: "Apt_Preset.sum_QwenImage2",
+    beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData?.name !== NODE_CLASS) return;
+
+        const onCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const r = onCreated?.apply(this, arguments);
+            ensureStageDefaults(this);
+            return r;
+        };
+
+        const onConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            const r = onConfigure?.apply(this, arguments);
+            ensureStageDefaults(this);
+            return r;
+        };
+    },
+});
