@@ -146,9 +146,9 @@ class sum_qwenImage21(io.ComfyNode):
             )[0]
         qwen_images = {f"image_{index}": image for index, image in enumerate(source_images, start=1)}
         image_resolution = 0 if resolution["resolution"] == "keep resolution" else round(math.sqrt(resolution["megapixels"]) * 1024)
-        positive, latent, _, _, _ = TextEncodeQwenImage21._encode_positive(
-            clip, prompt, vae, image_resolution, qwen_images,
-        )
+        positive, _, latent = TextEncodeQwenImage21.execute(
+            clip, prompt, "", vae=vae, resolution=image_resolution, images=qwen_images,
+        ).result
         negative = ConditioningZeroOut().zero_out(positive)[0]
         context = new_context(context, model=model, positive=positive, negative=negative, latent=latent,
                               pos=prompt, neg="")
