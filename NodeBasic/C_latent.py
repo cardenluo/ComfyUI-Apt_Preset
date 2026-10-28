@@ -220,7 +220,7 @@ class latent_image2noise:
             },
         }
 
-    RETURN_TYPES = ("image",)
+    RETURN_TYPES = ("IMAGE",)
     FUNCTION = "node"
     CATEGORY = "Apt_Preset/chx_tool/latent"
 
@@ -257,7 +257,7 @@ class latent_image2noise:
         )),)
 
 
-class latent_Image2Noise:
+class xxlatent_Image2Noise:
     @classmethod
     def INPUT_TYPES(s):
         return {
