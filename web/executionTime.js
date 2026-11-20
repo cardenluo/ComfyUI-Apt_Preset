@@ -2,14 +2,7 @@ import {api} from "../../../scripts/api.js";
 import {app} from "../../../scripts/app.js";
 import {$el} from "../../../scripts/ui.js";
 
-// region: Refresh Timer
-// Use requestAnimationFrame (not setInterval) so the timer ticks are
-// synchronised with the display refresh rate (typically 60Hz). This avoids
-// the "stuck then jumps from 10s to 15s" behaviour caused by browsers
-// throttling setInterval (especially in background tabs) - rAF naturally
-// pauses when the tab is hidden and resumes cleanly when it is shown again,
-// and the displayed time is always computed from performance.now() at draw
-// time so it is always accurate to the current frame.
+
 let refreshRaf = null;
 let lastRefreshAt = 0;
 const REFRESH_INTERVAL_MS = 100; // throttle dirty-canvas flagging to ~10fps
@@ -17,13 +10,11 @@ const TASK_TIMER_SETTING = 'Apt_Preset.Display.ShowTaskTimer';
 const NODE_TIMER_SETTING = 'Apt_Preset.Display.ShowNodeTimer';
 
 function taskTimerEnabled() {
-    // 只读本插件自己的设置项：不回落读 Dev-Utils 的 'Execution Time.*'，
-    // 否则两个插件装在一起时，一边关掉会把另一边也带偏。
-    return app.ui.settings.getSettingValue(TASK_TIMER_SETTING, true) !== false;
+    return app.ui.settings.getSettingValue(TASK_TIMER_SETTING, false) === true;
 }
 
 function nodeTimerEnabled() {
-    return app.ui.settings.getSettingValue(NODE_TIMER_SETTING, true) !== false;
+    return app.ui.settings.getSettingValue(NODE_TIMER_SETTING, false) === true;
 }
 
 function stopRefreshTimer() {
@@ -56,7 +47,7 @@ function formatExecutionTime(time) {
     return `${(time / 1000.0).toFixed(2)}s`
 }
 
-// Reference: https://gist.github.com/zentala/1e6f72438796d74531803cc3833c039c
+
 function formatBytes(bytes, decimals) {
     if (bytes === 0) {
         return '0 B'
@@ -69,7 +60,6 @@ function formatBytes(bytes, decimals) {
 }
 
 
-// Reference: https://github.com/ltdrdata/ComfyUI-Manager/blob/main/js/comfyui-manager.js
 function drawBadge(node, orig, restArgs) {
     let ctx = restArgs[0];
     const r = orig?.apply?.(node, restArgs);
@@ -308,14 +298,14 @@ const SETTINGS = [
         id: TASK_TIMER_SETTING,
         name: '是否打开任务时间',
         type: 'boolean',
-        defaultValue: true,
+        defaultValue: false,
         onChange: setTaskTimerVisible,
     },
     {
         id: NODE_TIMER_SETTING,
         name: '是否打开节点上面的时间',
         type: 'boolean',
-        defaultValue: true,
+        defaultValue: false,
         onChange: setNodeTimerVisible,
     },
 ];
@@ -349,7 +339,6 @@ function freezeTimerDisplay() {
 }
 // endregion
 
-// https://stackoverflow.com/a/56370447
 function exportTable(table, separator = ',') {
     // Select rows from table_id
     var rows = table.querySelectorAll('tr');
@@ -358,11 +347,8 @@ function exportTable(table, separator = ',') {
     for (var i = 0; i < rows.length; i++) {
         var row = [], cols = rows[i].querySelectorAll('td, th');
         for (var j = 0; j < cols.length; j++) {
-            // Clean innertext to remove multiple spaces and jumpline (break csv)
             var data = cols[j].innerText.replace(/(\r\n|\n|\r)/gm, '').replace(/(\s\s)/gm, ' ')
-            // Escape double-quote with double-double-quote (see https://stackoverflow.com/questions/17808511/properly-escape-a-double-quote-in-csv)
             data = data.replace(/"/g, '""');
-            // Push escaped string
             row.push('"' + data + '"');
         }
         csv.push(row.join(separator));
@@ -538,7 +524,6 @@ function refreshTable() {
 }
 
 app.registerExtension({
-    // 与 ComfyUI-Dev-Utils 的 "TyDev-Utils.ExecutionTime" 区分开，避免同名/资源互相覆盖
     name: "ComfyUI-Apt_Preset.ExecutionTime",
     settings: SETTINGS,
     async setup() {
@@ -551,7 +536,7 @@ app.registerExtension({
         }
         executionHistory = loadExecutionHistory();
 
-        // Show the timer display immediately (always visible)
+
         ensureTimerDisplay();
         
         api.addEventListener("executing", ({detail}) => {
@@ -586,10 +571,7 @@ app.registerExtension({
             if (detail.class_type === "flow_stage_begin") {
                 const stageIndex = Number(detail.flow_stage_index);
                 const stageTotal = Number(detail.flow_stage_total);
-                // flow_stage_begin 的 stage_index 输入本身就是 1-based（后端 C_flow.py 里
-                // 用它算 requested_index，0 只表示“新一轮从第 1 阶段开始”）。
-                // 以前这里无条件 +1，导致第 1 阶段 0→1 正确，但第 2 阶段 2→3，
-                // 列表就变成 index1、index3……永远跳过 2。
+   
                 const stage = Number.isInteger(stageIndex) && stageIndex >= 0
                     ? (stageIndex === 0 ? 1 : stageIndex)
                     : null;
@@ -615,8 +597,7 @@ app.registerExtension({
         });
 
         api.addEventListener("execution_start", ({detail}) => {
-            // Always start the refresh timer so the live badge updates
-            // even on the very first run (where total_execution_time is null).
+
             startRefreshTimer();
             beginExecutionHistory();
             showTimerDisplay();
