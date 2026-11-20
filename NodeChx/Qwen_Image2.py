@@ -9,12 +9,28 @@ import node_helpers
 import comfy.model_management
 from comfy_api.latest import io
 from comfy_extras.nodes_qwen import TextEncodeQwenImage21
-from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageConditioning
+
 from nodes import ConditioningZeroOut
+
 
 from ..office_unit import *
 from ..main_unit import *
 from ..NodeBasic.C_promp import text_clip_Generate
+
+
+
+
+try:
+    from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageConditioning
+    SCIPY_AVAILABLE = True
+except ImportError:
+    MiniMaxH3ImageConditioning = None
+    SCIPY_AVAILABLE = False
+
+
+
+
+
 #endregion-----------------------------import----------------------------
 
 
